@@ -12,25 +12,30 @@ ROOT = Path(__file__).resolve().parent
 
 
 @contextlib.contextmanager
-def boot(disk):
-    vm = subprocess.Popen([ROOT / "run.sh", disk], stdin=subprocess.PIPE,
+def boot(disk, launcher=None, timeout=20):
+    vm = subprocess.Popen([*(launcher or [ROOT / "run.sh"]), disk], stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     with selectors.DefaultSelector() as selector:
         selector.register(vm.stdout, selectors.EVENT_READ)
 
-        def prompt(command=None):
+        def prompt(command=None, *, secret=None):
             if command is not None:
                 vm.stdin.write(command.encode() + b"\r")
                 vm.stdin.flush()
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + timeout
             output = b""
-            while not output.endswith(b"kernel> "):
+            terminator = b"\n}\nkernel> " if command == "source" else b"kernel> "
+            while not output.endswith(terminator):
                 if not selector.select(max(0, deadline - time.monotonic())):
                     raise AssertionError(("console timeout", output[-600:]))
                 chunk = os.read(vm.stdout.fileno(), 16384)
                 if not chunk:
                     raise AssertionError(("early exit", vm.poll(), output[-600:]))
                 output += chunk
+                if secret is not None and output.endswith(b"API key (hidden): "):
+                    vm.stdin.write(secret.encode() + b"\r")
+                    vm.stdin.flush()
+                    secret = None
             result = output.decode()
             if command != "source":
                 print(result.removesuffix("kernel> ").rstrip(), flush=True)
@@ -59,7 +64,7 @@ def disk_record(disk, slot):
     with disk.open("rb") as f:
         f.seek(base)
         epoch, magic, abi, size, source_size = struct.unpack("<QIIII", f.read(24))
-        assert epoch > 0 and magic == 0x31584B4C and abi == 1
+        assert epoch > 0 and magic == 0x31584B4C and abi == 2
         f.seek(base + 512)
         image = f.read(size)
         assert image[:7] == b"\x7fELF\x02\x01\x01" and image[18:20] == b"\xb7\0"
@@ -91,7 +96,8 @@ def exercise(disk):
         expect(c, "switch", "build=2 slot=A hot=1 message=second-self-build")
     img1, src1 = disk_record(disk, 1)
     img2, src2 = disk_record(disk, 0)
-    seed_source = (ROOT / "src/abi.h").read_bytes() + (ROOT / "src/kernel.c").read_bytes()
+    seed_source = (ROOT / "src/abi.h").read_bytes() + (ROOT / "src/kernel.c").read_bytes().replace(
+        b'#include "harness.c"', (ROOT / "src/harness.c").read_bytes())
     assert src1 == seed_source.replace(b"hello-kernel", b"first-self-build", 1)
     assert src2 == src1.replace(b"first-self-build", b"second-self-build", 1)
     assert img1 != img2 and b"message=second-self-build" in img2

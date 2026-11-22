@@ -5,7 +5,10 @@ typedef unsigned int u32;
 typedef unsigned long u64;
 #define IMAGE_CAP (256 * 1024)
 #define SOURCE_CAP (64 * 1024)
-#define ABI_VERSION 1
+#define ABI_VERSION 2
+struct proposal {
+    char read[128], before[6144], after[8192], command[128], expected[256], message[512];
+};
 struct machine {
     u32 abi;
     int slot;
@@ -20,4 +23,12 @@ struct machine {
     void (*enter)(struct machine *);
     void (*barrier)(void);
     void (*poweroff)(void);
+    int upgrade, trial;
+    char diagnostic[1024];
+    int (*propose)(const char *url, const char *model, const char *goal,
+                   const char *source, const char *feedback, const char *command,
+                   const char *expected, int query_only, struct proposal *result);
+    int (*probe)(const char *url, const char *model, char *message, unsigned cap);
+    void (*end_trial)(void);
+    void (*set_key)(const char *url, const char *key);
 };

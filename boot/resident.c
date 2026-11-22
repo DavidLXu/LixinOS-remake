@@ -9,6 +9,10 @@
 extern const u8 seed_begin[], seed_end[], source_begin[], source_end[];
 extern void transfer(struct machine *, u64) __attribute__((noreturn));
 extern void psci_poweroff(void);
+extern int propose(const char *, const char *, const char *, const char *, const char *,
+                   const char *, const char *, int, struct proposal *);
+extern int probe(const char *,const char *,char *,unsigned);
+extern void set_key(const char *, const char *);
 static struct machine machine;
 static unsigned cursor;
 static int output_open;
@@ -59,10 +63,11 @@ void *_sbrk(ptrdiff_t n) {
     top += n; return old;
 }
 static void diagnostic(void *ignored, const char *s) {
-    (void)ignored; _write(2, s, strlen(s)); _write(2, "\n", 1);
+    (void)ignored; snprintf(machine.diagnostic,sizeof machine.diagnostic,"%s",s); _write(2, s, strlen(s)); _write(2, "\n", 1);
 }
 static int compile(struct machine *m, unsigned generation) {
     char value[24];
+    m->diagnostic[0] = 0;
     TCCState *t = tcc_new();
     if (!t) return 0;
     snprintf(value, sizeof(value), "%u", generation);
@@ -102,6 +107,25 @@ static int valid(const u8 *bytes, u32 size) {
     return executable;
 }
 static void barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
+volatile unsigned trial_armed;
+static void end_trial(void) {
+    __asm__ volatile("msr daifset,#2\nmsr cntp_ctl_el0,xzr\nisb" ::: "memory");
+    trial_armed=0;
+}
+static void arm_trial(void) {
+    /* GICv2, non-secure EL1 physical timer PPI 30 on QEMU virt. */
+    volatile u32 *dist=(volatile u32 *)0x08000000, *cpu=(volatile u32 *)0x08010000;
+    dist[0]=1; dist[0x100/4]=1u<<30;
+    ((volatile u8 *)dist)[0x400+30]=0x80;
+    cpu[1]=0xff; cpu[0]=1;
+    u64 freq, now;
+    __asm__ volatile("mrs %0,cntfrq_el0":"=r"(freq));
+    __asm__ volatile("mrs %0,cntpct_el0":"=r"(now));
+    u64 limit=now+8*freq, enable=1;
+    trial_armed=1;
+    __asm__ volatile("msr cntp_cval_el0,%0\nmsr cntp_ctl_el0,%1\nisb\nmsr daifclr,#2" ::
+                     "r"(limit),"r"(enable):"memory");
+}
 static void enter(struct machine *m) {
     struct elf_header h;
     if (!valid(m->image, m->image_len)) abort();
@@ -114,6 +138,7 @@ static void enter(struct machine *m) {
         memset((void *)(p.va + p.file), 0, p.mem - p.file);
     }
     barrier();
+    if (m->abi==ABI_VERSION && m->trial==1) arm_trial(); else end_trial();
     transfer(m, h.entry);
 }
 void boot_main(void) {
@@ -122,6 +147,9 @@ void boot_main(void) {
     machine.compile = compile; machine.valid = valid;
     machine.enter = enter; machine.barrier = barrier;
     machine.poweroff = psci_poweroff;
+    machine.propose = propose; machine.set_key = set_key;
+    machine.probe=probe; machine.end_trial=end_trial;
+    machine.upgrade = *(volatile u32 *)0x41fff000 == 0x123afecd;
     machine.image_len = seed_end - seed_begin;
     machine.source_len = source_end - source_begin;
     if (machine.image_len > IMAGE_CAP || machine.source_len >= SOURCE_CAP) abort();

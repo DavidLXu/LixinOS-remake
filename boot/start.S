@@ -2,6 +2,9 @@
 .global boot_entry
 boot_entry:
     msr daifset, #15
+    ldr x1, =vectors
+    msr vbar_el1,x1
+    isb
     ldr x1, =0x41ff0000
     mov sp, x1
     mrs x1, cpacr_el1
@@ -55,3 +58,21 @@ transfer:
 identity_map:
     .quad 0x401, 0x40000705
     .zero 4080
+
+.section .text,"ax"
+.balign 2048
+vectors:
+.rept 16
+    b exception
+    .balign 128
+.endr
+exception:
+    msr daifset,#15
+    ldr x0, =trial_armed
+    ldr w0, [x0]
+    cbz w0, halt_fault
+    ldr x0, =0x84000009
+    hvc #0
+halt_fault:
+    wfe
+    b halt_fault

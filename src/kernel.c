@@ -3,7 +3,14 @@
 #endif
 /* The build embeds abi.h followed by this file as one editable translation unit. */
 static struct machine *m;
+static char observed[512];
+static int capturing, observed_len, overflow;
 static void put(char c) {
+    if (capturing) {
+        if (observed_len + 1 < (int)sizeof observed) observed[observed_len++] = c;
+        else overflow = 1;
+        return;
+    }
     while (*(volatile u32 *)0x09000018 & 32) {}
     *(volatile u32 *)0x09000000 = (u8)c;
 }
@@ -16,13 +23,30 @@ static int prefix(const char *s, const char *p) {
 }
 static int same(const char *a, const char *b) { return prefix(a, b) && length(a) == length(b); }
 static void copy(u8 *to, const u8 *from, u32 n) { while (n--) *to++ = *from++; }
+/* TCC lowers structure assignments and initializers to these freestanding routines. */
+void *memcpy(void *to, const void *from, u64 n) {
+    u8 *dst=to; const u8 *src=from;
+    while (n--) *dst++=*src++;
+    return to;
+}
+void *memset(void *to, int value, u64 n) {
+    u8 *p=to;
+    while (n--) *p++=(u8)value;
+    return to;
+}
+void *memmove(void *to, const void *from, u64 n) {
+    u8 *dst=to; const u8 *src=from;
+    if ((u64)dst <= (u64)src) { while (n--) *dst++=*src++; }
+    else { while (n) { --n; dst[n]=src[n]; } }
+    return to;
+}
 static u32 digest(const void *data, u32 n) {
     const u8 *p = data;
     u32 h = 2166136261U;
     while (n--) h = (h ^ *p++) * 16777619U;
     return h;
 }
-static int line(char *s, unsigned cap) {
+static int input_line(char *s, unsigned cap, int echo) {
     unsigned n = 0;
     int full = 0;
     for (;;) {
@@ -30,8 +54,8 @@ static int line(char *s, unsigned cap) {
         char c = *(volatile u32 *)0x09000000;
         if (c == '\r' || c == '\n') { put('\n'); s[n] = 0; return !full; }
         if (c == 8 || c == 127) {
-            if (n) { --n; say("\b \b"); }
-        } else if (n + 1 < cap) { s[n++] = c; put(c); }
+            if (n) { --n; if (echo) say("\b \b"); }
+        } else if (n + 1 < cap) { s[n++] = c; if (echo) put(c); }
         else full = 1;
     }
 }
@@ -111,7 +135,7 @@ struct record {
 static unsigned base(int slot) { return slot * 1024; }
 static int header(int slot, struct record *r) {
     if (!blocks(0, base(slot), (u8 *)r, sizeof(*r))) return 0;
-    return r->magic == 0x31584b4c && r->abi == ABI_VERSION && r->epoch &&
+    return r->magic == 0x31584b4c && (r->abi == 1 || r->abi == ABI_VERSION) && r->epoch &&
         r->elf_len && r->elf_len <= IMAGE_CAP && r->src_len && r->src_len < SOURCE_CAP &&
         r->header_hash == digest(r, (u8 *)&r->header_hash - (u8 *)r);
 }
@@ -127,7 +151,7 @@ static int load_record(int slot, struct record *r) {
     return header(slot, r) && read_payload(slot, r);
 }
 static void select_record(int slot, struct record *r) {
-    m->slot = slot; m->epoch = r->epoch;
+    m->abi = r->abi; m->slot = slot; m->epoch = r->epoch;
     m->source_len = r->src_len; m->image_len = r->elf_len;
     copy(m->image, saved_image, r->elf_len);
     copy((u8 *)m->source, (u8 *)saved_source, r->src_len);
@@ -138,7 +162,7 @@ static int publish_header(int slot, struct record *r) {
     r->header_hash = digest(r, (u8 *)&r->header_hash - (u8 *)r);
     return blocks(1, base(slot), (u8 *)r, sizeof(*r)) && io(4, 0);
 }
-static int install(int slot) {
+static int stage(int slot, struct record *out) {
     struct record r;
     r.epoch = m->epoch + 1; r.magic = 0x31584b4c; r.abi = ABI_VERSION;
     r.elf_len = m->image_len; r.src_len = m->source_len;
@@ -146,10 +170,15 @@ static int install(int slot) {
     r.src_hash = digest(m->source, r.src_len);
     if (!blocks(1, base(slot)+1, m->image, r.elf_len) ||
         !blocks(1, base(slot)+513, (u8 *)m->source, r.src_len) || !io(4, 0)) return 0;
-    return read_payload(slot, &r) && publish_header(slot, &r);
+    *out = r;
+    return read_payload(slot, &r);
+}
+static int install(int slot) {
+    struct record r;
+    return stage(slot, &r) && publish_header(slot, &r);
 }
 static void banner(void) {
-    say("Kernel 1.0.0 build="); number(BUILD_NUMBER);
+    say("Kernel 1.1.0 build="); number(BUILD_NUMBER);
     say(" slot="); put(m->slot < 0 ? '-' : 'A'+m->slot);
     say(" hot="); number(m->switches);
     say(" message=hello-kernel\n");
@@ -177,6 +206,14 @@ static int replace(char *expr) {
     }
     return 0;
 }
+/* Pure console queries also form the behavioral acceptance interface. */
+static int query_command(const char *cmd) {
+    if (same(cmd,"version")) banner();
+    else if (same(cmd,"note")) { say("note="); say(m->note); put('\n'); }
+    else return 0;
+    return 1;
+}
+#include "harness.c"
 void _start(struct machine *state) {
     m = state;
     if (m->abi != ABI_VERSION) { say("unsupported handoff\n"); for (;;) {} }
@@ -186,26 +223,37 @@ void _start(struct machine *state) {
         struct record a, b, r;
         int va = header(0, &a), vb = header(1, &b);
         int first = vb && (!va || b.epoch > a.epoch) ? 1 : 0;
-        if (load_record(first, &r)) select_record(first, &r);
-        if (load_record(1-first, &r)) select_record(1-first, &r);
+        for (int attempt=0; attempt<2; ++attempt) {
+            int current=attempt ? 1-first : first;
+            if (!load_record(current,&r)) continue;
+            if (m->upgrade && r.abi == 1) {
+                m->epoch = r.epoch; m->upgrade = 0;
+                if (install(1-current) && load_record(1-current,&r)) select_record(1-current,&r);
+                if (!load_record(current,&r)) { say("upgrade recovery failed\n"); for (;;) {} }
+            }
+            select_record(current, &r);
+        }
         /* Give the first self-build a bootable predecessor for rollback. */
         if (install(0)) { m->slot = 0; m->epoch = 1; }
     }
     banner();
+    if (disk) agent_boot();
     int ready = 0;
-    char cmd[256];
+    char cmd[2048];
     for (;;) {
         say("kernel> ");
-        if (!line(cmd, sizeof cmd)) { say("line too long\n"); continue; }
-        if (same(cmd,"version")) banner();
+        if (!input_line(cmd, sizeof cmd, 1)) { say("line too long\n"); continue; }
+        if (query_command(cmd)) continue;
+        else if (same(cmd,"agent") || prefix(cmd,"agent ")) {
+            ready = 0; if (disk) agent_command(cmd); else say("agent needs a disk\n");
+        }
         else if (same(cmd,"source")) say(m->source);
         else if (prefix(cmd,"replace ")) {
             if (replace(cmd+8)) { ready = 0; say("source changed\n"); }
             else say("replace failed\n");
         } else if (prefix(cmd,"note ") && length(cmd+5) < sizeof m->note) {
             copy((u8 *)m->note, (u8 *)cmd+5, length(cmd+5)+1);
-        } else if (same(cmd,"note")) { say("note="); say(m->note); put('\n'); }
-        else if (same(cmd,"build")) {
+        } else if (same(cmd,"build")) {
             ready = m->compile(m, BUILD_NUMBER + 1);
             say(ready ? "TCC: ELF ready\n" : "TCC: build failed\n");
         } else if (same(cmd,"switch")) {
@@ -225,6 +273,6 @@ void _start(struct machine *state) {
             say("rollback unavailable\n");
         } else if (same(cmd,"off")) {
             say("power off\n"); m->poweroff();
-        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | off\n");
+        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | agent | off\n");
     }
 }
