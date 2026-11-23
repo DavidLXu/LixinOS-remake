@@ -1,0 +1,7 @@
+name longest
+purpose Find the ONE longest C file by newline count under /src/user/ (行数最多的 C 文件). Output its path and count. For a full table call the counter directly.
+map wc -l /src/user/*.c
+reduce max
+tests /src/validation/max.tests
+implement Read /work/counts.txt or the input file passed as argv[1]. Each row is PATH SPACE DECIMAL_COUNT. Print the largest count and its path in the format PATH SPACE COUNT followed by one newline. Break ties by lexicographically smallest path. Use a single 8192-byte buffer, putstr(path), putchar(32), decimal digits and putchar(10).
+verify /src/validation/longest.build

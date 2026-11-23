@@ -178,7 +178,7 @@ static int install(int slot) {
     return stage(slot, &r) && publish_header(slot, &r);
 }
 static void banner(void) {
-    say("Kernel 1.5.0 build="); number(BUILD_NUMBER);
+    say("Kernel 1.6.0 build="); number(BUILD_NUMBER);
     say(" slot="); put(m->slot < 0 ? '-' : 'A'+m->slot);
     say(" hot="); number(m->switches);
     say(" message=hello-kernel\n");
@@ -323,6 +323,7 @@ static int flush_disk(void) { return io(4,0); }
 void _start(struct machine *state) {
     m = state;
     if (m->abi != ABI_VERSION) { say("unsupported handoff\n"); for (;;) {} }
+    m->console_line=input_line;
     int disk = disk_init();
     if (!disk) say("disk unavailable\n");
     if (disk && m->slot == -1 && !m->guest_resident && !m->upgrade) try_system();

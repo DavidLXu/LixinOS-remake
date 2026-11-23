@@ -7,6 +7,7 @@ struct tool_input {
     struct { char name[32], code[8192], recipe[128]; } work[5];
     char counts[8192], answer[320], scratch[8192];
     unsigned has_scratch;
+    struct { char name[48], text[4096]; unsigned installed; } files[8];
 };
 struct tool_output {
     unsigned length, truncated;

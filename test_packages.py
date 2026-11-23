@@ -41,7 +41,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         context, goal = [m['content'] for m in req['messages'][1:]]
-        if goal == USE.removeprefix('agent task '):
+        if context.startswith('FLOW '):
+            result={'flow':''}
+        elif goal == USE.removeprefix('agent task '):
             assert 'wc' in context and '#include' not in context and 'wc' not in goal
             result = {'command': 'wc -l /src/user/*.c'}
         elif context=='(empty)':
@@ -88,7 +90,7 @@ def disk_kernel(disk):
 def exercise(disk,url,key):
     expected = {f'/src/user/{p.name}':p.read_bytes().count(b'\n') for p in (ROOT/'user').glob('*.c')}
     with boot(disk,timeout=300) as c:
-        expect(c,None,'1.5.0 build=0 slot=A')
+        expect(c,None,'1.6.0 build=0 slot=A')
         if url:
             c('agent model '+url+' fixture')
         else:
@@ -110,7 +112,7 @@ def exercise(disk,url,key):
         expect(c,'tcc /work/wc.build','application ELF ready')
         expect(c,'run -l wc.build','\n2\n')
     with boot(disk,timeout=300) as c:
-        expect(c,None,'1.5.0 build=0 slot=A hot=0')
+        expect(c,None,'1.6.0 build=0 slot=A hot=0')
         if key:
             c('agent key',secret=key)
         expect(c,'apps stats','application_builds=0 source_writes=0 executions=0')

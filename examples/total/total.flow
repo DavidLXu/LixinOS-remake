@@ -1,0 +1,7 @@
+name total
+purpose Return ONE decimal grand total of newline counts across ALL C files directly under /src/user/ (所有 C 文件的总行数). Includes zero-line files. For a per-file table use the counter directly.
+map wc -l /src/user/*.c
+reduce sum
+tests /work/sum.tests
+implement Read one text file at argv[1]. Each line is PATH, a space and a nonnegative decimal newline count. Add the counts. Output ONLY the decimal total and one newline, including zero. Input is at most 8191 bytes. Use the file_* SDK, putchar for digits, and one 8192-byte buffer. Do not scan the directory.
+verify /work/checktotal.build

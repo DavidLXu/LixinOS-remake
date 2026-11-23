@@ -284,15 +284,16 @@ int package_proposal(const char *url,const char *model,const char *goal,const ch
         "(one line describing arguments and purpose). Include app.h. Implement int main(int argc,char **argv); "
         "return 0 on success, nonzero on error. Only the listed SDK functions exist. No libc or stdio. "
         "Tests specify arguments|exact stdout, with one trailing newline implicit. Return numeric output alone when specified." :
+        mode==3?
+        "Choose a verified workflow by matching the requested outcome against the supplied FLOW menu. "
+        "Return a single JSON object with the field flow. Copy its exact name from the matching menu line, "
+        "or return {\"flow\":\"\"} when none matches. A workflow can acquire its own missing tools. "
+        "Choose by meaning and output format across languages." :
         mode==2?
-        "Classify the requested final output before choosing a tool. Return exactly one JSON object. "
-        "A single winning C file by line count under /src/user/ is the longest workflow. "
-        "For that goal, emit only {\"flow\":\"longest\",\"producer\":\"wc\",\"reducer\":\"max\"} when wc is installed; "
-        "max can be absent. The caller cannot interpret a list or pick a winner after a direct command. "
-        "Chinese 最多 or 最长 requests one winner; 各文件的行数 requests the full table. "
-        "Only for a goal fully answered by direct stdout, emit {\"command\":\"installed command with args\"}; "
-        "a final absolute glob runs the tool separately per file. For another missing capability, "
-        "emit {\"new_tool\":\"conventional lowercase command name\"}." :
+        "Return exactly one JSON object. Select by the requested FINAL output. "
+        "Use a command only when its direct stdout fully satisfies the task. For per-file output a final absolute glob "
+        "runs the command on each matching file. Return {\"command\":\"command with args\"}. "
+        "For a missing command return {\"new_tool\":\"conventional lowercase command name\"}." :
         "Choose an installed command from the guest catalog to fulfill the task. Return JSON with a single string "
         "field command. For each file in a directory, put an absolute glob like /src/user/*.c as the last argument. "
         "The guest expands it and invokes the command separately for each file, labeling each result. No pipelines.";
@@ -312,8 +313,7 @@ int package_proposal(const char *url,const char *model,const char *goal,const ch
                 field(answer,"usage",out->expected,sizeof out->expected) && out->expected[0] &&
                 c_char_literals(out->after,sizeof out->after) :
                 field(answer,"command",out->command,sizeof out->command) && out->command[0];
-    if (!ok && mode==2 && field(answer,"flow",out->read,sizeof out->read) && !strcmp(out->read,"longest") &&
-        field(answer,"producer",out->command,sizeof out->command) && field(answer,"reducer",out->expected,sizeof out->expected)) ok=3;
+    if (mode==3) ok=field(answer,"flow",out->read,sizeof out->read) ? (out->read[0]?3:4) : 0;
     if (!ok && mode==2 && field(answer,"new_tool",out->read,sizeof out->read) && out->read[0]) ok=2;
     if (!ok) {
         const char *reason=cJSON_GetStringValue(cJSON_GetObjectItem(choice,"finish_reason"));

@@ -49,8 +49,8 @@ class CompositionProvider(Fixture):
         request=json.loads(data)
         context,goal=[m['content'] for m in request['messages'][1:]]
         if goal==GOAL:
-            assert 'wc ' in context
-            response={'flow':'longest','producer':'wc','reducer':'max'}
+            assert 'FLOW longest:' in context
+            response={'flow':'longest'}
         elif 'Name: max' in context:
             response={'source':MAX_SOURCE,'usage':'FILE selects the maximum path-count row'}
         else:
@@ -65,12 +65,12 @@ class CompositionProvider(Fixture):
 
 
 @contextlib.contextmanager
-def old_release(tmp):
+def old_release(tmp,tag="v1.4.0"):
     saved={k:os.environ.get(k) for k in ('LIXINOS_BOOT_IMAGE','LIXINOS_SOURCE_VOLUME')}
     try:
         for env,name in zip(saved,('boot.elf','sources.img')):
             path=tmp/name
-            path.write_bytes(subprocess.check_output(['git','show',f'v1.4.0:release/{name}'],cwd=ROOT))
+            path.write_bytes(subprocess.check_output(['git','show',f'{tag}:release/{name}'],cwd=ROOT))
             os.environ[env]=str(path)
         yield
     finally:
@@ -96,7 +96,7 @@ def exercise(tmp,url,key):
         original=command_hash(c(MAKE),'wc')
         if key: c('agent model https://api.deepseek.com/chat/completions deepseek-flash')
     with boot(disk,launcher=[ROOT/'run.sh','--upgrade']) as c:
-        expect(c,None,'Kernel 1.5.0')
+        expect(c,None,'Kernel 1.6.0')
         expect(c,'apps recheck wc','tests=3 elf='+original)
         expect(c,'apps stats','application_builds=0 source_writes=0')
     before=disk_kernel(disk)

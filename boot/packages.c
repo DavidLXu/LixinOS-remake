@@ -21,7 +21,8 @@ static struct result_files committed, working;
 static const struct result_files *visible_result=&committed;
 struct result_stamp {
     unsigned revision, magic;
-    u8 contents[32], producer[32], reducer[32], verifier[32], volume[32], guard[32];
+    u8 contents[32], producer[32], reducer[32], verifier[32], volume[32];
+    char flow[128]; u8 manifest[32], guard[32];
 };
 static struct result_stamp latest_result;
 static char scratch[8192];
@@ -58,9 +59,11 @@ static unsigned pkg_base(unsigned index,unsigned bank) {
     return index==APP_COUNT?APP_BASE+bank*DRAFT_SECTORS:
         APP_BASE+2*DRAFT_SECTORS+(2*index+bank)*APP_SECTORS;
 }
+static const char *entry_file(const struct app_entry *,const char *);
+#include "workfiles.c"
 static int pkg_name(const char *s) {
     static const char *reserved[]={"agent","apps","help","ls","cd","cat","read","grep","pwd","run",
-        "result","tcc","tool","off","switch","build","rollback","source","replace","note","version"};
+        "work","flow","result","tcc","tool","off","switch","build","rollback","source","replace","note","version"};
     if (!*s || strlen(s)>=sizeof pending.source.name) return 0;
     for (const char *p=s;*p;++p) if (*p<'a' || *p>'z') return 0;
     for (unsigned i=0;i<sizeof reserved/sizeof reserved[0];++i) if (!strcmp(s,reserved[i])) return 0;
@@ -113,11 +116,14 @@ static const char *work_file(const char *name) {
     if (!strcmp(name,"/work/scratch.txt") && has_scratch) return scratch;
     if (!strcmp(name,"/work/counts.txt") && visible_result->counts[0]) return visible_result->counts;
     if (!strcmp(name,"/work/answer.txt") && visible_result->answer[0]) return visible_result->answer;
+    int file=work_index(name);
+    if (file>=0) return workspace.files[file].text;
     const char *data=entry_file(&pending,name);
     for (unsigned i=0;i<APP_COUNT && !data;++i) data=entry_file(entries+i,name);
     return data;
 }
 static void copy_workspace(struct tool_input *in) {
+    memcpy(in->files,workspace.files,sizeof in->files);
     in->has_scratch=has_scratch; strcpy(in->scratch,scratch);
     strcpy(in->counts,visible_result->counts); strcpy(in->answer,visible_result->answer);
     for (unsigned i=0;i<=APP_COUNT;++i) {
@@ -193,7 +199,7 @@ static char *argument(char **tail) {
 static int make_app(char *args,const char *url,const char *model,const char *tools) {
     char *name=argument(&args),*tests=argument(&args);
     unsigned n; const char *suite=source_file(tests,&n);
-    if (!pkg_name(name) || strncmp(tests,"/src/",5) || !*args || !suite || !n || n>=sizeof pending.source.tests) {
+    if (!pkg_name(name) || work_conflict(name) || (strncmp(tests,"/src/",5) && strncmp(tests,"/work/",6)) || !*args || !suite || !n || n>=sizeof pending.source.tests) {
         puts("agent make NAME /src/FILE.tests GOAL"); return 0;
     }
     static char context[12288];
@@ -282,6 +288,7 @@ static int execute_app(unsigned index,char *args,const char *tools,int audit,str
     if (!hits) puts("no matching files");
     return hits!=0;
 }
+#include "flows.c"
 #include "composition.c"
 static int packages(const char *cmd,const char *url,const char *model,const char *tools,
                     int (*disk_io)(int,unsigned,u8 *,u32),int (*flush)(void),unsigned sectors) {
@@ -292,8 +299,12 @@ static int packages(const char *cmd,const char *url,const char *model,const char
     }
     if (!loaded) {
         for (unsigned i=0;i<APP_COUNT;++i) read_entry(i,entries+i);
-        read_entry(APP_COUNT,&pending); load_results(sectors); loaded=1;
+        read_entry(APP_COUNT,&pending); load_results(sectors); load_workspace(sectors); loaded=1;
     }
+    if (!strncmp(cmd,"work put ",9)) { work_put(cmd+9,sectors); return 1; }
+    if (!strncmp(cmd,"flow install ",13)) { install_flow(cmd+13,sectors); return 2; }
+    if (!strcmp(cmd,"flow list")) { char flows[4096]; flow_catalog(flows,sizeof flows,-1); printf("%s",flows); return 1; }
+    if (!strncmp(cmd,"flow run ",9)) { run_flow(cmd+9,url,model,tools,sectors); return 2; }
     if (!strcmp(cmd,"apps") || !strcmp(cmd,"help")) {
         char list[1400]; catalog(list,sizeof list);
         if (!strcmp(cmd,"help")) puts("version source replace build switch rollback note pwd cd ls cat read grep tcc run tool agent apps off");
@@ -314,7 +325,7 @@ static int packages(const char *cmd,const char *url,const char *model,const char
     if (!strcmp(cmd,"result info")) { result_info(); return 1; }
     if (!strcmp(cmd,"result verify") || !strncmp(cmd,"result verify ",14)) {
         const char *args=cmd[13]?cmd+14:"/work/counts.txt /work/answer.txt";
-        u8 verifier[32]; verify_result(args,tools,verifier); return 2;
+        verify_committed(args,tools); return 2;
     }
     if (!strcmp(cmd,"apps stats")) {
         printf("application_builds=%u source_writes=%u executions=%u\n",app_builds,workspace_writes,launches); return 1;
@@ -331,18 +342,21 @@ static int packages(const char *cmd,const char *url,const char *model,const char
     int choose=!strncmp(cmd,"agent task ",11);
     int audit=choose || !strncmp(cmd,"agent use ",10);
     if (audit) {
-        char list[1400],*goal=line+(choose?11:10),*suite=NULL;
+        char list[8192],*goal=line+(choose?11:10),*suite=NULL;
         if (choose && !strncmp(goal,"/src/",5)) suite=argument(&goal);
         int count=catalog(list,sizeof list);
-        printf("discovered:\n%s",count?list:"(empty)\n");
         if (!count && !choose) return 1;
+        char *menu=list+strlen(list);
+        if (choose && !suite && !flow_catalog(menu,sizeof list-(menu-list),1)) { puts("flow catalog overflow"); return 1; }
+        printf("discovered:\n%s",*list?list:"(empty)\n");
+        if (*menu) {
+            int selected=package_proposal(url,model,goal,menu,3,&answer);
+            if (!selected) { puts(answer.message); return 1; }
+            if (selected==3) { run_flow(answer.read,url,model,tools,sectors); return 2; }
+            *menu=0;
+        }
         int result=package_proposal(url,model,goal,count?list:"(empty)",choose?2:0,&answer);
         if (!result) { puts(answer.message); return 1; }
-        if (result==3) {
-            if (suite || sectors<RECEIPT_BASE+APP_COUNT) { puts("composition unavailable"); return 1; }
-            compose_longest(answer.command,answer.expected,url,model,tools);
-            return 2;
-        }
         if (result==2) {
             if (!pkg_name(answer.read) || app_index(answer.read)>=0) { puts("invalid new tool selection"); return 1; }
             printf("missing capability: %s\n",answer.read);

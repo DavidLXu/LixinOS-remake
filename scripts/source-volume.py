@@ -21,7 +21,8 @@ files['kernel.c']=kernel
 files['tools.c']=(root/'user/tools.c').read_bytes().replace(b'#include "api.h"',(root/'user/api.h').read_bytes()).replace(b'#include "sourcefs.h"',(root/'boot/sourcefs.h').read_bytes())
 tree('kernel',root/'src',{'.c','.h'})
 tree('user',root/'user',{'.c','.h','.build'})
-tree('validation',root/'validation',{'.c','.build','.txt','.tests'})
+tree('validation',root/'validation',{'.c','.h','.build','.txt','.tests'})
+tree('flows',root/'flows',{'.flow'})
 tree('boot',root/'boot',{'.h','.c','.S','.ld'})
 tree('net',root/'net',{'.c','.h'})
 tiny=build/'tinycc'

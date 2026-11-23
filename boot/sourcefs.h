@@ -57,6 +57,7 @@ static const char *user_work_file(const struct tool_input *in,const char *path) 
     if (in->counts[0] && work_name(leaf,"counts.txt")) return in->counts;
     if (in->answer[0] && work_name(leaf,"answer.txt")) return in->answer;
     if (in->has_scratch && work_name(leaf,"scratch.txt")) return in->scratch;
+    for (unsigned i=0;i<8;++i) if (in->files[i].name[0] && work_name(leaf,in->files[i].name)) return in->files[i].text;
     for (unsigned i=0;i<in->work_count;++i) {
         const char *name=in->work[i].name,*p=leaf;
         while (*name && *name==*p) { ++name; ++p; }

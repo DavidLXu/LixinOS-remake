@@ -1,4 +1,4 @@
-# LixinOS 1.5.0
+# LixinOS 1.6.0
 
 LixinOS 是 AArch64 裸机 C 系统。发布包的启动 ELF 由客机内的 TinyCC 编译。启动时挂载随包的源码卷，客机可以重建自己的内核、TinyCC、ELF 加载器、网络栈、TLS 库和用户态程序。
 
@@ -138,6 +138,23 @@ result verify /work/scratch.txt /work/answer.txt
 
 1.5.0 的真实 DeepSeek 验收复用了 1.4.0 安装的同一份 `wc` ELF（SHA-256 前缀 `328fd8231288`），生成并安装了 `max`（`2512f8cfa5fd`）。客机核验了 `crt.c 68`、`hello.c 7`、`tools.c 112`。删去 `hello.c` 的计数后获胜路径仍是 `tools.c`，同一验证器拒绝缺行的输入，并再次接受原始结果。
 
+## 在同一个镜像上安装不同的流程
+
+1.6.0 通过 `/src/flows/*.flow` 和工作盘上显式安装的清单发现流程。模型收到已安装命令和可用流程的用途，只需返回流程名。客机按清单逐文件运行 `map` 命令，将结果交给 `reduce` 程序，再用 `verify` 指定的 EL0 验证器检查两个文件。每个流程目前有两个命令步骤，结果路径是 `/work/counts.txt` 和 `/work/answer.txt`。首次缺少归约程序时，客机把清单中的 `implement` 和 `tests` 交给用户程序创建入口。工作盘记录所用清单和验证器的 SHA-256。
+
+清单按行依次列出 `name`、`purpose`、`map`、`reduce`、`tests`、`implement` 和 `verify`。发布源码卷带有完整示例 `/src/flows/longest.flow`。第二个流程的独立安装包在检出目录的 `examples/total/`。在已装 `wc` 的客机里，用 `work put /work/文件名` 依次写入该包中的 `sum.tests`、`checktotal.c`、`checktotal.build` 和 `total.flow`。每次粘贴文件内容后另起一行输入一个句点结束。客机可保存八个具名文本文件，单个文件容量是 4095 字节，写入后内容固定。用新的文件名和流程名登记修订版本。流程安装和验证器编译由客机完成。
+
+```text
+flow install /work/total.flow
+flow list
+agent key
+agent task 统计 /src/user/ 下所有 C 文件的总行数，只给一个合计数字
+result info
+result verify
+```
+
+安装的流程和程序均可跨冷启动复用。在 `sum` 已经生成并通过验收的盘上，`flow run total` 可以离线执行。串口安装包由操作者提供清单、用例和独立验证器，真实模型负责选择流程并编写 `sum`。运行 `python3 test_flows.py` 可重现安装、断电记录损坏回退和漏文件验收。加 `--deepseek-keychain` 可从客机直连 DeepSeek 运行新任务。验收使用冻结的测试源码卷，额外包含一个零字节的 `/src/user/empty.c`。三个其他 C 文件共 187 行，故意漏掉空文件时，独立验证器应报出缺失的文件名。
+
 ## 用客机 Agent 迭代内核
 
 默认模型端点是 DeepSeek 的 Chat Completions API。在客机串口输入 `agent key`，在隐藏提示符输入密钥。密钥只在本次开机的客机 RAM 中有效，绑定到输入时的完整 HTTPS URL。切换端点会清除密钥。每个任务先发送只读命令分派函数的源码、需求、验收条件和修复记录。模型可以按函数名请求其他源码，也可以请求完整的当前内核源码。候选内核与常驻服务处于同一地址空间，应使用可信的模型和内核代码。
@@ -181,7 +198,7 @@ llama-server -m qwen2.5-coder-1.5b-instruct-q4_k_m.gguf -c 24576 --alias coder -
 
 发布包中包含一张示例盘。Qwen2.5-Coder-0.5B 使用查询工具增加了 `color` 命令，Qwen2.5-Coder-1.5B 使用通用源码替换修改了 `note` 的输出标签。第二代提交时，两项回归均通过。冷启动后执行 `color` 会得到 `blue`，执行 `note kept` 再执行 `note` 会得到 `memo=kept`。
 
-示例盘保留 1.1.0 两代模型修改的原始启动状态。要在该盘运行 1.5.0 用户工具，可在关机后用下节的升级命令安装新种子。直接运行该盘时，推理端点已配置上面的本地模型端点，查看结果、执行 `agent verify` 或回滚无需启动模型服务。
+示例盘保留 1.1.0 两代模型修改的原始启动状态。要在该盘运行 1.6.0 用户工具，可在关机后用下节的升级命令安装新种子。直接运行该盘时，推理端点已配置上面的本地模型端点，查看结果、执行 `agent verify` 或回滚无需启动模型服务。
 
 ```sh
 mkdir -p build
@@ -191,7 +208,7 @@ mkdir -p build
 
 ### 从 1.0.0、1.1.0 或 1.2.0 工作盘升级
 
-先让使用这张盘的虚拟机关机，然后运行 `./run.sh --upgrade /path/to/system.img`。新种子占用备用槽，保留先前的活动内核及其源码，`rollback` 可以切回。升级安装的是 1.5.0 源码，自定义旧源码保存在旧槽；后续再提交新一代会复用备用槽。普通启动旧盘会继续运行盘中已安装的版本。回滚到旧版本后，用同一条 `--upgrade` 命令重新进入 1.5.0。显式升级会将原有 1 MiB 工作盘扩展到 25 MiB。升级后使用支持完整源码卷的工具；1.2.0 保存过的旧工具可用 `tool previous` 查看。
+先让使用这张盘的虚拟机关机，然后运行 `./run.sh --upgrade /path/to/system.img`。新种子占用备用槽，保留先前的活动内核及其源码，`rollback` 可以切回。升级安装的是 1.6.0 源码，自定义旧源码保存在旧槽；后续再提交新一代会复用备用槽。普通启动旧盘会继续运行盘中已安装的版本。回滚到旧版本后，用同一条 `--upgrade` 命令重新进入 1.6.0。显式升级会将原有 1 MiB 工作盘扩展到 25 MiB。升级后使用支持完整源码卷的工具；1.2.0 保存过的旧工具可用 `tool previous` 查看。
 
 ### 自我迭代的边界
 
