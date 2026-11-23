@@ -41,23 +41,52 @@ static int work_name(const char *p,const char *q) {
     while (*p && *p==*q) { ++p; ++q; }
     return !*p && !*q;
 }
-/* Resolve the parent using the same cwd and directory rules as /src. */
+/* Build an absolute path for SDK calls, including a shell cwd below /work. */
+static int user_base_path(int node,char *out,unsigned cap,unsigned *used) {
+    if(node<0 || (unsigned)node>=sources->count)return 0;
+    if(!node){out[0]='/';out[1]=0;*used=1;return 1;}
+    if(!user_base_path(sources->entries[node].parent,out,cap,used))return 0;
+    const char *name=source_at(sources->entries[node].name);
+    if(*used>1){if(*used+2>cap)return 0;out[(*used)++]='/';}
+    while(*name){if(*used+2>cap)return 0;out[(*used)++]=*name++;}
+    out[*used]=0;return 1;
+}
+static int user_path(const struct tool_input *in,const char *path,char *out,unsigned cap) {
+    unsigned n=0;
+    if(!*path||cap<2)return 0;
+    if(*path=='/'){out[n++]='/';out[n]=0;}
+    else if(in->shell_dir[0]){
+        while(in->shell_dir[n]){if(n+2>cap)return 0;out[n]=in->shell_dir[n];++n;}out[n]=0;
+    }else if(!user_base_path(in->cwd,out,cap,&n))return 0;
+    while(*path){
+        while(*path=='/')++path;
+        const char *part=path;while(*path && *path!='/')++path;unsigned len=path-part;
+        if(!len||(len==1 && *part=='.'))continue;
+        if(len==2 && part[0]=='.' && part[1]=='.'){
+            while(n>1 && out[n-1]!='/')--n;if(n>1)--n;out[n]=0;continue;
+        }
+        if(n+len+2>cap)return 0;
+        if(n>1)out[n++]='/';for(unsigned i=0;i<len;++i)out[n++]=part[i];out[n]=0;
+    }return 1;
+}
 static const char *user_work_file(const struct tool_input *in,const char *path) {
-    const char *leaf=path;
-    for (const char *p=path;*p;++p) if (*p=='/') leaf=p+1;
-    int parent=in->cwd;
-    if (leaf!=path) {
-        char dir[256]; unsigned len=leaf-path;
-        if (len>=sizeof dir) return 0;
-        for (unsigned i=0;i<len;++i) dir[i]=path[i];
-        dir[len]=0; parent=source_lookup(in->cwd,dir);
+    char absolute[256];
+    if(!user_path(in,path,absolute,sizeof absolute))return 0;
+    const char *prefix="/work/",*leaf=absolute;
+    while(*prefix && *prefix==*leaf){++prefix;++leaf;}if(*prefix||!*leaf)return 0;
+    if(work_name(leaf,"dsh.build") && USER_APPLETS->recipe[0])return USER_APPLETS->recipe;
+    if(leaf[0]=='a' && leaf[1]=='p' && leaf[2]=='p' && leaf[3]=='l' && leaf[4]=='e' && leaf[5]=='t' && leaf[6]=='-'){
+        for(unsigned i=0;i<APPLET_COUNT;++i){
+            const struct applet_source *e=USER_APPLETS->entries+i;const char *g=e->group,*p=leaf+7;
+            if(!*g)continue;
+            while(*g && *g==*p){++g;++p;}
+            if(!*g && work_name(p,".c"))return e->code;
+        }
     }
-    int work=source_lookup(0,"/work");
-    if (parent<0 || parent!=work) return 0;
     if (in->counts[0] && work_name(leaf,"counts.txt")) return in->counts;
     if (in->answer[0] && work_name(leaf,"answer.txt")) return in->answer;
     if (in->has_scratch && work_name(leaf,"scratch.txt")) return in->scratch;
-    for (unsigned i=0;i<8;++i) if (in->files[i].name[0] && work_name(leaf,in->files[i].name)) return in->files[i].text;
+    for (unsigned i=0;i<VISIBLE_WORK_FILES;++i) if (in->files[i].name[0] && in->files[i].installed!=3 && work_name(leaf,in->files[i].name)) return in->files[i].text;
     for (unsigned i=0;i<in->work_count;++i) {
         const char *name=in->work[i].name,*p=leaf;
         while (*name && *name==*p) { ++name; ++p; }

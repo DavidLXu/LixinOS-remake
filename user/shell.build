@@ -1,0 +1,4 @@
+/src/user/shell.c
+/src/bearssl/src/hash/sha2small.c
+/src/bearssl/src/codec/dec32be.c
+/src/bearssl/src/codec/enc32be.c

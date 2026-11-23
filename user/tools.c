@@ -66,6 +66,10 @@ static void command(struct tool_input *in) {
         else if (node==0) { print("src/\n"); print("work/\n"); }
         else if (node==source_lookup(0,"/work")) {
             for (unsigned i=0;i<8;++i) if (in->files[i].name[0]) { print(in->files[i].name); emit(10); }
+            if(USER_APPLETS->recipe[0])print("dsh.build\n");
+            for(unsigned i=0;i<APPLET_COUNT;++i)if(USER_APPLETS->entries[i].group[0]){
+                print("applet-");print(USER_APPLETS->entries[i].group);print(".c\n");
+            }
             if (in->counts[0]) print("counts.txt\n");
             if (in->has_scratch) print("scratch.txt\n");
             if (in->answer[0]) print("answer.txt\n");

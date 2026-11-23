@@ -16,8 +16,10 @@ static struct {
     unsigned pos, size;
 } files[8];
 int file_open(const char *path) {
-    int node=source_lookup(input->cwd,path);
-    const char *workspace=node<0?user_work_file(input,path):0;
+    char absolute[256];
+    if(!user_path(input,path,absolute,sizeof absolute))return -1;
+    int node=source_lookup(0,absolute);
+    const char *workspace=node<0?user_work_file(input,absolute):0;
     if (!workspace && (node<0 || source_isdir(node))) return -1;
     for (int fd=0;fd<8;++fd) {
         if (files[fd].bytes) continue;

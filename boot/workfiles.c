@@ -7,8 +7,10 @@ static struct work_tree workspace, next_workspace;
 static unsigned work_revision;
 struct work_stamp { unsigned magic,revision; u8 payload[32],guard[32]; };
 typedef char work_payload_fits[(sizeof workspace<=(WORK_BANK-1)*512)?1:-1];
-typedef char user_work_fits[(sizeof(struct tool_input)<=0x30000 &&
-    sizeof workspace.files==sizeof(((struct tool_input *)0)->files))?1:-1];
+typedef char user_work_fits[(sizeof(struct tool_input)<=0x70000 &&
+    sizeof workspace.files[0]==sizeof(((struct tool_input *)0)->files[0]))?1:-1];
+#include "shell_store.c"
+#include "applet_store.c"
 static int work_index(const char *path) {
     if (strncmp(path,"/work/",6) || !path[6]) return -1;
     for (unsigned i=0;i<8;++i) if (!strcmp(path+6,workspace.files[i].name)) return i;
@@ -16,9 +18,9 @@ static int work_index(const char *path) {
 }
 static int work_conflict(const char *name) {
     char path[80]; snprintf(path,sizeof path,"/work/%s.c",name);
-    if (work_index(path)>=0) return 1;
+    if (work_index(path)>=0 || shell_index(path)>=0) return 1;
     snprintf(path,sizeof path,"/work/%s.build",name);
-    return work_index(path)>=0;
+    return work_index(path)>=0 || shell_index(path)>=0;
 }
 static void load_workspace(unsigned sectors) {
     if (sectors<WORK_BASE+2*WORK_BANK) return;
@@ -50,6 +52,8 @@ static void work_put(const char *path,unsigned sectors) {
     if (!strcmp(path,"/work/counts.txt") || !strcmp(path,"/work/answer.txt") || !strcmp(path,"/work/scratch.txt") ||
         entry_file(&pending,path)) { puts("workspace path reserved"); return; }
     for (unsigned i=0;i<APP_COUNT;++i) if (entry_file(entries+i,path)) { puts("workspace path reserved"); return; }
+    if(module_path(path)){puts("workspace path reserved");return;}
+    if(shell_index(path)>=0){puts("workspace path in use");return;}
     int idx=work_index(path);
     if (idx<0) for (unsigned i=0;i<8;++i) if (!workspace.files[i].name[0]) { idx=i; break; }
     if (idx<0) { puts("workspace full"); return; }

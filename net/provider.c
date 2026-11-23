@@ -275,11 +275,15 @@ int package_proposal(const char *url,const char *model,const char *goal,const ch
     cJSON *req=cJSON_CreateObject();
     cJSON_AddStringToObject(req,"model",model);
     cJSON_AddStringToObject(cJSON_AddObjectToObject(req,"response_format"),"type","json_object");
-    cJSON_AddNumberToObject(req,"max_tokens",mode==1?8192:3000);
+    cJSON_AddNumberToObject(req,"max_tokens",(mode==1||mode==4)?8192:3000);
     if (!strcmp(url,"https://api.deepseek.com/chat/completions") && !strcmp(model,"deepseek-flash"))
         cJSON_AddStringToObject(cJSON_AddObjectToObject(req,"thinking"),"type","disabled");
     cJSON *messages=cJSON_AddArrayToObject(req,"messages");
-    const char *instructions=mode==1?
+    const char *instructions=mode==4?
+        "Write a freestanding C command module for LixinOS. Respond in JSON with source and single-line usage. "
+        "Follow the header and requested function signature exactly. Include ds_api.h. Use only that SDK. "
+        "Do not call the legacy shell, libc, or ds_invoke to implement a command itself. "
+        "Prefix helpers static. Keep source below 7900 bytes. Return actual general algorithms, not test answers." : mode==1?
         "Write one freestanding foreground C program. Return JSON fields source (complete C) and usage "
         "(one line describing arguments and purpose). Include app.h. Implement int main(int argc,char **argv); "
         "return 0 on success, nonzero on error. Only the listed SDK functions exist. No libc or stdio. "
@@ -309,7 +313,7 @@ int package_proposal(const char *url,const char *model,const char *goal,const ch
     cJSON *choice=cJSON_GetArrayItem(cJSON_GetObjectItem(envelope,"choices"),0);
     char *content=cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(choice,"message"),"content"));
     cJSON *answer=content?cJSON_ParseWithOpts(content,NULL,1):NULL;
-    ok=mode==1 ? field(answer,"source",out->after,sizeof out->after) && out->after[0] &&
+    ok=(mode==1||mode==4) ? field(answer,"source",out->after,sizeof out->after) && out->after[0] &&
                 field(answer,"usage",out->expected,sizeof out->expected) && out->expected[0] &&
                 c_char_literals(out->after,sizeof out->after) :
                 field(answer,"command",out->command,sizeof out->command) && out->command[0];

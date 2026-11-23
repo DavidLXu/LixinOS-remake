@@ -1,6 +1,6 @@
-# LixinOS 1.6.0
+# LixinOS-remake 1.6.0
 
-LixinOS 是 AArch64 裸机 C 系统。发布包的启动 ELF 由客机内的 TinyCC 编译。启动时挂载随包的源码卷，客机可以重建自己的内核、TinyCC、ELF 加载器、网络栈、TLS 库和用户态程序。
+LixinOS-remake 是 AArch64 裸机 C 系统。发布包的启动 ELF 由客机内的 TinyCC 编译。启动时挂载随包的源码卷，客机可以重建自己的内核、TinyCC、ELF 加载器、网络栈、TLS 库和用户态程序。
 
 ## 运行
 
@@ -55,10 +55,10 @@ off
 ```text
 cat /src/user/hello.build
 tcc /src/user/hello.build
-run LixinOS
+run LixinOS-remake
 ```
 
-预期输出是 `hello LixinOS`。带独立 `_start` 的单文件程序也可以直接执行 `tcc /src/路径/文件.c`。构建清单里的路径使用客机绝对路径，每行一个文件。源码卷作为只读构建输入发布；当前内核和命令工具的客机修改分别保存在工作盘，`/src/kernel.c` 和 `/src/tools.c` 会显示当前内容。
+预期输出是 `hello LixinOS-remake`。带独立 `_start` 的单文件程序也可以直接执行 `tcc /src/路径/文件.c`。构建清单里的路径使用客机绝对路径，每行一个文件。源码卷作为只读构建输入发布；当前内核和命令工具的客机修改分别保存在工作盘，`/src/kernel.c` 和 `/src/tools.c` 会显示当前内容。
 
 ## 客机 TCC 用户态命令
 
@@ -243,3 +243,43 @@ python3 test_bootstrap.py
 网络实现使用 lwIP 提交 `0a0452b2c39bdd91e252aef045c115f88f6ca773`、BearSSL 0.6 和 cJSON 1.7.19。对应源码包含在 `third_party/`。构建使用内置 CA 公钥表 `net/anchors.h`，由 BearSSL 的 `brssl ta` 从本次发布的 Mozilla CA 集合生成。
 
 自举运行库使用 musl 1.2.5 的相关源码及头文件，并使用 stb_sprintf 提供格式化输出。两者的源码和许可均随源码卷发布。
+
+## Agent 的 Linux 风格命令
+
+在 `kernel>` 输入 `commands` 查看客机提供的 39 条命令及参数，或用 `commands sed` 查看单条说明。客机第一次调用时用自己的 TCC 编译 `/src/user/shell.build`，在 EL0 执行，并在本次启动中复用 ELF。命令支持单引号、双引号、管道、输入重定向、覆盖写入和追加写入。普通 `grep TEXT FILE` 保留旧控制台的行号输出；用 `sh grep TEXT FILE` 可明确选择新实现。已有同名安装包也可通过 `sh` 明确选择内置命令。安装包可作为管道的第一个程序，例如 `mlp /work/train.txt 120 predict 9 11 | wc -w`。
+
+```text
+mkdir /work/report
+cd /work/report
+printf '%s\n' pear apple apple > fruit.txt
+sort fruit.txt | uniq -c > counts
+awk '{print $2}' counts
+sed -i 's/pear/plum/g' fruit.txt
+find /work/report -type f -name '*.txt'
+```
+
+每行的退出状态为零时只显示输出，非零时显示 `exit=N`。工作目录支持相对路径、`.` 和 `..`。`/work` 有 32 个可修改的文件或目录项，单文件最多 4095 字节。原有 8 个不可变工作输入单独保留。新文件可直接交给客机 TCC。一次管道最多提交一项文件修改，磁盘保留两份校验过的快照。`sed` 支持字面替换，`awk` 支持单字段、字段数和行号，`find -name` 支持 `*` 和 `?`。完整语法以 `commands` 为准。
+
+`agent task 任务` 可发现工具目录并执行其中的命令。`agent shell 任务` 直接从这组命令中选择。为缺失能力准备验收文件后，用 `agent task /work/名称.tests 任务` 生成、编译、测试并安装一个新程序，供下次开机调用。
+
+## DeepSeek 在客机里重写的命令集
+
+`sh COMMAND` 调用原来的 39 条命令，`dsh COMMAND` 调用 DeepSeek 为同一命令目录写的 18 个 C 模块。`/src/user/deepseek/` 包含完整命令源码，`/src/user/deepseek.build` 列出各翻译单元。两版共用串口参数解析、EL0 管道缓冲区、只读源码卷、路径解析和工作盘的原子写入接口。客机 TCC 单独链接两份 ELF。使用下面的命令可以比较同一段管道。
+
+```text
+sh printf '%s\n' pear apple apple | sort | uniq -c
+dsh printf '%s\n' pear apple apple | sort | uniq -c
+tcc /src/user/deepseek.build
+```
+
+在串口用 `agent key` 设置本次开机的模型凭据后，`agent applet GROUP [/work/FILE.tests] SPEC` 会读取该组的当前源码和用户态接口，让模型返回修订后的完整 C 源码。客机 TCC 将候选模块与其他命令一起链接。提供用例时，客机在提交前逐条验证返回状态和标准输出。每行写 `命令|期望输出`，用最后一个竖线分隔，输出末尾的换行隐含。用例可以调用管道。用 `@1 test a = b|` 可以验收退出状态 1 和空输出，`@0`、`@2` 同理。文件修改不会由这条只读验收路径提交。
+
+客机把通过的源码写到工作盘的双备份记录。可用 `sh cat /work/applet-GROUP.c` 查看。`dsh local COMMAND` 和 `agent dsh GOAL` 使用本盘的修订模块，其余命令来自随包源码卷。`dsh COMMAND` 仍使用随包版本。已经安装的普通应用仍用 `agent make` 管理。
+
+```text
+sh printf 'sha256sum -c /work/hashlist|/work/sample: OK\n' > /work/checkdigest.tests
+sh printf abc > /work/sample
+sh sha256sum /work/sample > /work/hashlist
+agent applet digest /work/checkdigest.tests 保留已有 sha256sum 的行为，增加 -c LIST，核验清单里的文件，输出 PATH: OK 或 PATH: FAILED，任一不匹配返回 1
+dsh local sha256sum -c /work/hashlist
+```

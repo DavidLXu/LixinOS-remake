@@ -113,17 +113,28 @@ static const char *entry_file(const struct app_entry *e,const char *name) {
 }
 static const char *work_file(const char *name) {
     if (strncmp(name,"/work/",6)) return NULL;
+    if(module_path(name))return module_file(name);
     if (!strcmp(name,"/work/scratch.txt") && has_scratch) return scratch;
     if (!strcmp(name,"/work/counts.txt") && visible_result->counts[0]) return visible_result->counts;
     if (!strcmp(name,"/work/answer.txt") && visible_result->answer[0]) return visible_result->answer;
     int file=work_index(name);
     if (file>=0) return workspace.files[file].text;
+    file=shell_index(name);
+    if(file>=0)return shell_files.files[file].installed==3 ? NULL : shell_files.files[file].text;
     const char *data=entry_file(&pending,name);
     for (unsigned i=0;i<APP_COUNT && !data;++i) data=entry_file(entries+i,name);
     return data;
 }
+static char shell_directory[64];
+static struct {char text[98304];unsigned size;} shell_pipe;
 static void copy_workspace(struct tool_input *in) {
-    memcpy(in->files,workspace.files,sizeof in->files);
+    memcpy(USER_APPLETS->entries,modules,sizeof modules);
+    const char *recipe=module_file("/work/dsh.build");
+    if(recipe)strcpy(USER_APPLETS->recipe,recipe);
+    if(shell_directory[0] && in->cwd==source_lookup(0,"/work"))strcpy(in->shell_dir,shell_directory);
+    if(shell_pipe.size){in->pipe_bytes=shell_pipe.size;memcpy(in->pipe_data,shell_pipe.text,shell_pipe.size);}
+    memcpy(in->files,workspace.files,sizeof workspace.files);
+    memcpy(in->files+8,shell_files.files,sizeof shell_files.files);
     in->has_scratch=has_scratch; strcpy(in->scratch,scratch);
     strcpy(in->counts,visible_result->counts); strcpy(in->answer,visible_result->answer);
     for (unsigned i=0;i<=APP_COUNT;++i) {
@@ -290,6 +301,8 @@ static int execute_app(unsigned index,char *args,const char *tools,int audit,str
 }
 #include "flows.c"
 #include "composition.c"
+#include "shell_dispatch.c"
+#include "applet_checks.c"
 static int packages(const char *cmd,const char *url,const char *model,const char *tools,
                     int (*disk_io)(int,unsigned,u8 *,u32),int (*flush)(void),unsigned sectors) {
     package_io=disk_io; package_flush=flush;
@@ -299,7 +312,7 @@ static int packages(const char *cmd,const char *url,const char *model,const char
     }
     if (!loaded) {
         for (unsigned i=0;i<APP_COUNT;++i) read_entry(i,entries+i);
-        read_entry(APP_COUNT,&pending); load_results(sectors); load_workspace(sectors); loaded=1;
+        read_entry(APP_COUNT,&pending); load_results(sectors); load_workspace(sectors); load_shell_store(sectors); load_modules(sectors); loaded=1;
     }
     if (!strncmp(cmd,"work put ",9)) { work_put(cmd+9,sectors); return 1; }
     if (!strncmp(cmd,"flow install ",13)) { install_flow(cmd+13,sectors); return 2; }
@@ -308,6 +321,7 @@ static int packages(const char *cmd,const char *url,const char *model,const char
     if (!strcmp(cmd,"apps") || !strcmp(cmd,"help")) {
         char list[1400]; catalog(list,sizeof list);
         if (!strcmp(cmd,"help")) puts("version source replace build switch rollback note pwd cd ls cat read grep tcc run tool agent apps off");
+        if (!strcmp(cmd,"help")) puts("sh | dsh | dsh local COMMAND | commands [NAME] | agent shell GOAL | agent dsh GOAL | agent applet GROUP SPEC");
         printf("installed commands:\n%s",list); return 1;
     }
     if (!strncmp(cmd,"apps info ",10)) {
@@ -339,11 +353,69 @@ static int packages(const char *cmd,const char *url,const char *model,const char
         else make_app(line+11,url,model,tools);
         return 2;
     }
+    if (!strncmp(cmd,"agent applet ",13)) {
+        char *task=line+13,*group=argument(&task);
+        char suite[1536]={0};
+        if(!strncmp(task,"/work/",6)||!strncmp(task,"/src/",5)){
+            char *testpath=argument(&task);unsigned len;const char *text=source_file(testpath,&len);
+            if(!text||!len||len>=sizeof suite){puts("invalid applet acceptance suite");return 1;}
+            memcpy(suite,text,len);
+        }
+        unsigned n;const char *sdk=source_file("/src/user/ds_api.h",&n);
+        if(!sdk || !*task || !*group || strlen(group)>=sizeof draft_module.group){puts("agent applet GROUP SPEC");return 1;}
+        for(const char *p=group;*p;++p)if(*p<'a'||*p>'z'){puts("invalid applet group");return 1;}
+        char path[96];snprintf(path,sizeof path,"/src/user/deepseek/%s.c",group);
+        if(source_lookup(0,path)<0){puts("unknown applet group");return 1;}
+        static char context[16384];char request[2304];
+        snprintf(request,sizeof request,"Implement int ds_%s(int argc,char **argv,DS input). %s",group,task);
+        const char *prior=module_source(group);
+        if(!prior)prior=source_file(path,&n);
+        snprintf(context,sizeof context,"%s\nExisting implementation, preserve working behavior:\n%s\nAcceptance cases:\n%s",sdk,prior?prior:"",suite);
+        for(unsigned attempt=0;attempt<3;++attempt){
+            if(!package_proposal(url,model,request,context,4,&answer)){puts(answer.message);continue;}
+            if(!save_scratch(answer.after,strlen(answer.after))){puts("module too large");return 1;}
+            memset(&draft_module,0,sizeof draft_module);strcpy(draft_module.group,group);strcpy(draft_module.code,scratch);
+            if(!one_line(answer.expected)){puts("invalid module usage");continue;}
+            strcpy(draft_module.usage,answer.expected);
+            use_draft=1;int built=compile_app("/work/dsh.build");use_draft=0;
+            if(!built||!check_applet_suite(suite,tools)){
+                snprintf(context,sizeof context,"%s\nAcceptance:\n%s\nPrevious draft:\n%s\nGuest diagnostic: %.600s",sdk,suite,scratch,machine.diagnostic);
+                continue;
+            }
+            if(!save_module(sectors)){puts("module commit failed");return 2;}
+            shell_size=0;u8 digest[32];char hex[65];sha(scratch,strlen(scratch),digest);hash_text(digest,hex);
+            printf("compiled and saved /work/applet-%s.c sha256=%s\n",group,hex);return 2;
+        }
+        puts("module build or acceptance failed");return 2;
+    }
+    if (!strncmp(cmd,"agent shell ",12) || !strncmp(cmd,"agent dsh ",10)) {
+        int deep=!strncmp(cmd,"agent dsh ",10);
+        static char menu[8192];strcpy(menu,shell_menu);
+        if(deep){
+            unsigned used=strlen(menu);
+            for(unsigned i=0;i<MODULE_COUNT;++i)if(modules[i].group[0]){
+                int n=snprintf(menu+used,sizeof menu-used,"Guest-local %s: %s\n",modules[i].group,modules[i].usage);
+                if(n<0||(unsigned)n>=sizeof menu-used){puts("module catalog too large");return 1;}
+                used+=n;
+            }
+        }
+        int selected=package_proposal(url,model,cmd+(deep?10:12),menu,2,&answer);
+        if (!selected) { puts(answer.message); return 1; }
+        if (selected==2) { printf("missing capability: %s\nuse agent make NAME /work/FILE.tests GOAL\n",answer.read); return 1; }
+        if(deep){
+            snprintf(line,sizeof line,"dsh local %s",answer.command);
+            printf("invoke %s\n",line);return run_shell(line,tools,sectors);
+        }
+        printf("invoke sh %s\n",answer.command);
+        return run_shell(answer.command,tools,sectors);
+    }
+    int handled=shell_dispatch(cmd,tools,sectors);
+    if(handled)return handled;
     int choose=!strncmp(cmd,"agent task ",11);
     int audit=choose || !strncmp(cmd,"agent use ",10);
     if (audit) {
         char list[8192],*goal=line+(choose?11:10),*suite=NULL;
-        if (choose && !strncmp(goal,"/src/",5)) suite=argument(&goal);
+        if (choose && (!strncmp(goal,"/src/",5) || !strncmp(goal,"/work/",6))) suite=argument(&goal);
         int count=catalog(list,sizeof list);
         if (!count && !choose) return 1;
         char *menu=list+strlen(list);
@@ -354,6 +426,11 @@ static int packages(const char *cmd,const char *url,const char *model,const char
             if (!selected) { puts(answer.message); return 1; }
             if (selected==3) { run_flow(answer.read,url,model,tools,sectors); return 2; }
             *menu=0;
+        }
+        if(choose && !suite){
+            int n=snprintf(menu,sizeof list-(menu-list),"sh COMMAND [ARGS] supports quoted text, |, <, >, >>. Available commands:\n%s",shell_menu);
+            if(n<0 || (unsigned)n>=sizeof list-(menu-list)){puts("command catalog overflow");return 1;}
+            count=1;
         }
         int result=package_proposal(url,model,goal,count?list:"(empty)",choose?2:0,&answer);
         if (!result) { puts(answer.message); return 1; }
@@ -368,6 +445,14 @@ static int packages(const char *cmd,const char *url,const char *model,const char
             return 2;
         }
         strcpy(line,answer.command);
+        if(choose && !suite){
+            char routed[sizeof line];strcpy(routed,line);char *tail=routed,*first=argument(&tail);
+            if(app_index(first)>=0 && strchr(line,'|'))return shell_dispatch(line,tools,sectors);
+            if(!strcmp(first,"sh") || (app_index(first)<0 && shell_known(first))){
+                printf("invoke sh %s\n",!strcmp(first,"sh")?tail:line);
+                return run_shell(!strcmp(first,"sh")?tail:line,tools,sectors);
+            }
+        }
     }
     char *args=line,*name=argument(&args); int index=app_index(name);
     if (index<0) { if (audit) puts("selected command is not installed"); return audit; }

@@ -111,6 +111,7 @@ static int compile_input(const char *path,unsigned generation,int user) {
     tcc_define_symbol(t, "BUILD_NUMBER", value);
     tcc_add_include_path(t,"/src/user"); tcc_add_include_path(t,"/src/boot");
     tcc_add_include_path(t,"/src/sdk");
+    if(user){tcc_add_include_path(t,"/src/bearssl/inc");tcc_add_include_path(t,"/src/bearssl/src");}
     output_cap=IMAGE_CAP;
     output_data = user ? tool_image : machine.image;
     output_length = user ? &tool_size : &machine.image_len;

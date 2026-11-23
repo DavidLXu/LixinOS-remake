@@ -160,8 +160,13 @@ def upgrade_result(tmp):
     with boot(disk,launcher=[ROOT/'run.sh','--upgrade']) as c:
         expect(c,None,'Kernel 1.6.0')
         expect(c,'result info','manifest=/src/flows/longest.flow')
+        # The user-source tree now includes new programs. The old counts are stale.
+        expect(c,'result verify','verification rejected')
+        for name in ('wc','max'):
+            expect(c,'apps recheck '+name,'rechecked '+name)
+        expect(c,'flow run longest','complete counts and maximum verified')
         expect(c,'result verify','complete counts and maximum verified')
-    print('PASS: verified a result committed in v1.5 after upgrading the same disk')
+    print('PASS: recovered the v1.5 result, rejected stale counts and verified recomputed counts')
 
 
 if __name__=='__main__':

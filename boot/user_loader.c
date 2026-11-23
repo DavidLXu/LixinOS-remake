@@ -84,7 +84,7 @@ static int tool_run(const char *line,const char *kernel,const char *tools,int cw
                     const char **text,unsigned *size,int *next_cwd) {
     if (!tool_ready) return -1;
     struct tool_input *in=(void *)(USER_BASE+0x110000);
-    struct tool_output *out=(void *)(USER_BASE+0x140000);
+    struct tool_output *out=(void *)(USER_BASE+0x180000);
     if (strlen(line)>=sizeof in->command || strlen(kernel)>=sizeof in->kernel ||
         strlen(tools)>=sizeof in->tools) return -1;
     memset((void *)USER_BASE,0,0x200000);
@@ -95,6 +95,8 @@ static int tool_run(const char *line,const char *kernel,const char *tools,int cw
     in->cwd=out->cwd=cwd;
     strcpy(in->program,program_name); strcpy(in->command,line); strcpy(in->kernel,kernel); strcpy(in->tools,tools);
     copy_workspace(in);
+    typedef char applet_view_fits[(sizeof(struct applet_view)<=0x50000)?1:-1];
+    for(unsigned n=0;n<sizeof(struct applet_view);n+=PAGE)permissions[(0x1a0000+n)/PAGE]=USER_RO;
     permit_data(in,sizeof *in); permit_data(out,sizeof *out);
     permit_data((void *)(USER_BASE+0x1f0000),0x10000);
     set_user_pages(1);
