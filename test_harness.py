@@ -68,7 +68,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
 def exercise(disk, server):
     with boot(disk) as c:
-        expect(c, None, "1.2.0 build=0")
+        expect(c, None, "1.3.0 build=0")
         expect(c, f"agent model http://10.0.2.2:{server.server_port}/v1/chat/completions fixture", "model saved")
         c("agent test ping|pong")
         expect(c, "agent run Add the ping query", "provider HTTP 503")

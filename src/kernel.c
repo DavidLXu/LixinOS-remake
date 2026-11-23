@@ -178,7 +178,7 @@ static int install(int slot) {
     return stage(slot, &r) && publish_header(slot, &r);
 }
 static void banner(void) {
-    say("Kernel 1.2.0 build="); number(BUILD_NUMBER);
+    say("Kernel 1.3.0 build="); number(BUILD_NUMBER);
     say(" slot="); put(m->slot < 0 ? '-' : 'A'+m->slot);
     say(" hot="); number(m->switches);
     say(" message=hello-kernel\n");
@@ -206,14 +206,61 @@ static int replace(char *expr) {
     }
     return 0;
 }
+/* Two independent resident banks start after the original 1 MiB disk. */
+struct system_record { u32 magic, volume, revision, size, hash, guard; };
+static unsigned system_sector(unsigned bank) { return 2048+bank*16384; }
+static int system_header(unsigned bank,struct system_record *h) {
+    return regs[0x100/4]>=system_sector(bank)+1 &&
+        blocks(0,system_sector(bank),(u8 *)h,sizeof *h) &&
+        h->magic==0x53595332 && h->volume==m->volume_id &&
+        h->revision && (h->revision&1)==bank && h->size && h->size<=SYSTEM_CAP &&
+        h->guard==digest(h,20);
+}
+static int system_latest(struct system_record h[2],int valid[2]) {
+    for (unsigned i=0;i<2;++i) valid[i]=system_header(i,h+i);
+    return valid[1] && (!valid[0] || h[1].revision>h[0].revision);
+}
+static int system_read(unsigned bank,struct system_record *h) {
+    return blocks(0,system_sector(bank)+1,m->system_buffer,h->size) &&
+        digest(m->system_buffer,h->size)==h->hash;
+}
+static void try_system(void) {
+    struct system_record h[2]; int valid[2];
+    unsigned newest=system_latest(h,valid);
+    for (unsigned n=0;n<2;++n) {
+        unsigned bank=newest^n;
+        if (valid[bank] && system_read(bank,h+bank)) m->boot_system(m->system_buffer,h[bank].size);
+    }
+}
+static int build_system_disk(int recovery) {
+    struct system_record previous[2],h; int valid[2];
+    unsigned latest=system_latest(previous,valid);
+    if (valid[latest] && !system_read(latest,previous+latest)) {
+        valid[latest]=0; latest^=1;
+    }
+    h.revision=(valid[latest]?previous[latest].revision:0)+1;
+    unsigned bank=h.revision&1, sector=system_sector(bank);
+    if (recovery) sector=34816; /* separate export slot after the 17 MiB work area */
+    if (!h.revision || regs[0x100/4] < sector+1+SYSTEM_CAP/512) {
+        say(recovery?"recovery build requires a 25 MiB work disk\n":"system build requires a 17 MiB work disk\n"); return 0;
+    }
+    const u8 *image;
+    if (!m->build_system(&image,&h.size,recovery)) { say("TCC: system build failed\n"); return 0; }
+    h.magic=0x53595332; h.volume=m->volume_id; h.hash=digest(image,h.size); h.guard=digest(&h,20);
+    if (!blocks(1,sector+1,(u8 *)image,h.size) || !io(4,0) ||
+        !blocks(0,sector+1,m->system_buffer,h.size) || digest(m->system_buffer,h.size)!=h.hash ||
+        !blocks(1,sector,(u8 *)&h,sizeof h) || !io(4,0)) { say("system ELF save failed\n"); return 0; }
+    say(recovery?"TCC: recovery ELF saved, bytes=":"TCC: bootable system ELF saved, bytes="); number(h.size); put('\n'); return 1;
+}
 /* Each slot reserves its last 64 sectors for an independent tool source bank. */
 struct tool_stamp { u32 magic, revision, size, hash, guard; };
 static char tool_draft[16384];
 static u32 tool_revision;
-static int tool_disk, tool_compiled, tool_dirty;
+static int tool_disk, tool_compiled, tool_dirty, app_loaded;
+static char app_path[192];
 static unsigned tool_bank(unsigned bank) { return base(bank)+960; }
 static int tool_header(unsigned bank, struct tool_stamp *h) {
-    return blocks(0,tool_bank(bank),(u8 *)h,sizeof *h) && h->magic==0x544f4f4c &&
+    return blocks(0,tool_bank(bank),(u8 *)h,sizeof *h) && (h->magic==0x544f4f4c || h->magic==0x544f4f32) &&
         h->revision && h->revision%2==bank && h->size && h->size<sizeof tool_draft &&
         h->guard==digest(h,16);
 }
@@ -227,7 +274,10 @@ static void tools_init(int disk) {
         unsigned i=newest^n;
         if (valid[i] && blocks(0,tool_bank(i)+1,(u8 *)tool_draft,h[i].size) &&
             digest(tool_draft,h[i].size)==h[i].hash) {
-            tool_revision=h[i].revision; tool_draft[h[i].size]=0; return;
+            tool_revision=h[i].revision; tool_draft[h[i].size]=0;
+            if (h[i].magic==0x544f4f32) return;
+            say("older tools preserved on disk; tool previous reads their source\n");
+            break;
         }
     }
     unsigned size=length(m->tool_seed);
@@ -235,7 +285,7 @@ static void tools_init(int disk) {
 }
 static int save_tools(void) {
     struct tool_stamp h;
-    h.magic=0x544f4f4c; h.revision=tool_revision+1; h.size=length(tool_draft);
+    h.magic=0x544f4f32; h.revision=tool_revision+1; h.size=length(tool_draft);
     h.hash=digest(tool_draft,h.size); h.guard=digest(&h,16);
     unsigned b=tool_bank(h.revision%2);
     if (!tool_disk || !h.revision || !blocks(1,b+1,(u8 *)tool_draft,h.size) || !io(4,0) ||
@@ -248,7 +298,7 @@ static int named(const char *cmd,const char *name) {
 }
 static void run_tool(const char *cmd) {
     if (tool_dirty) { say("compile tool edits with tcc tools first\n"); return; }
-    if (!tool_compiled) tool_compiled=m->tool_compile(tool_draft);
+    if (!tool_compiled) { app_loaded=0; tool_compiled=m->tool_compile(tool_draft); }
     if (!tool_compiled) { say("TCC: tool build failed\n"); return; }
     const char *text; unsigned size; int cwd;
     int result=m->tool_run(cmd,m->source,tool_draft,m->cwd,&text,&size,&cwd);
@@ -274,6 +324,7 @@ void _start(struct machine *state) {
     if (m->abi != ABI_VERSION) { say("unsupported handoff\n"); for (;;) {} }
     int disk = disk_init();
     if (!disk) say("disk unavailable\n");
+    if (disk && m->slot == -1 && !m->guest_resident && !m->upgrade) try_system();
     if (disk && m->slot == -1) {
         struct record a, b, r;
         int va = header(0, &a), vb = header(1, &b);
@@ -305,6 +356,17 @@ void _start(struct machine *state) {
         }
         else if (named(cmd,"cd")) run_tool(cmd);
         else if (same(cmd,"tool source")) say(tool_draft);
+        else if (same(cmd,"tool previous")) {
+            struct tool_stamp h; int found=0;
+            for (unsigned n=0;disk && n<2 && !found;++n) {
+                unsigned i=(tool_revision&1)^n;
+                if (tool_header(i,&h) && h.magic==0x544f4f4c &&
+                    blocks(0,tool_bank(i)+1,(u8 *)saved_source,h.size) && digest(saved_source,h.size)==h.hash) {
+                    saved_source[h.size]=0; say(saved_source); found=1;
+                }
+            }
+            if (!found) say("no previous tool source\n");
+        }
         else if (prefix(cmd,"tool edit ")) {
             char *expr=cmd+10, *with=expr;
             while (*with && *with!='|') ++with;
@@ -318,10 +380,32 @@ void _start(struct machine *state) {
             copy((u8 *)at,(const u8 *)with,fresh);
             tool_dirty=1; say("tool draft changed\n");
         } else if (same(cmd,"tcc tools")) {
-            tool_compiled=m->tool_compile(tool_draft);
+            app_loaded=0; tool_compiled=m->tool_compile(tool_draft);
             if (!tool_compiled) say("TCC: tool build failed\n");
             else if (tool_dirty && !save_tools()) say("tool save failed\n");
             else { tool_dirty=0; say("TCC: EL0 tools ELF ready\n"); }
+        } else if (same(cmd,"tcc system") || same(cmd,"tcc all") || same(cmd,"tcc recovery")) {
+            if (!disk) { say("system build requires a work disk\n"); continue; }
+            if (same(cmd,"tcc all")) {
+                tool_compiled=app_loaded=0;
+                if (!m->compile_apps(tool_draft)) { say("TCC: application build failed\n"); continue; }
+                ready=m->compile(m,BUILD_NUMBER+1);
+                if (!ready) { say("TCC: kernel build failed\n"); continue; }
+                say("TCC: applications and kernel ready\n");
+            }
+            build_system_disk(same(cmd,"tcc recovery"));
+        } else if (prefix(cmd,"tcc /src/") && !same(cmd,"tcc /src/kernel.c")) {
+            tool_compiled=0;
+            app_loaded=length(cmd+4)<sizeof app_path && m->compile_app(cmd+4);
+            if (app_loaded) copy((u8 *)app_path,(u8 *)cmd+4,length(cmd+4)+1);
+            else app_path[0]=0;
+            say(app_loaded?"TCC: application ELF ready\n":"TCC: application build failed\n");
+        } else if (same(cmd,"run") || prefix(cmd,"run ")) {
+            const char *text; unsigned size; int cwd;
+            if (!app_path[0]) { say("compile an application first\n"); continue; }
+            if (!app_loaded) { tool_compiled=0; app_loaded=m->compile_app(app_path); }
+            if (!app_loaded || m->tool_run(cmd[3]?cmd+4:"",m->source,tool_draft,m->cwd,&text,&size,&cwd)) say("application failed\n");
+            else for (unsigned i=0;i<size;++i) put(text[i]);
         } else if (same(cmd,"tool reset")) {
             tool_revision=0; tool_dirty=0; tool_compiled=0; tools_init(disk);
             say("tool draft reloaded\n");
@@ -332,7 +416,7 @@ void _start(struct machine *state) {
             else say("replace failed\n");
         } else if (prefix(cmd,"note ") && length(cmd+5) < sizeof m->note) {
             copy((u8 *)m->note, (u8 *)cmd+5, length(cmd+5)+1);
-        } else if (same(cmd,"build")) {
+        } else if (same(cmd,"build") || same(cmd,"tcc kernel") || same(cmd,"tcc /src/kernel.c")) {
             ready = m->compile(m, BUILD_NUMBER + 1);
             say(ready ? "TCC: ELF ready\n" : "TCC: build failed\n");
         } else if (same(cmd,"switch")) {
@@ -352,6 +436,6 @@ void _start(struct machine *state) {
             say("rollback unavailable\n");
         } else if (same(cmd,"off")) {
             say("power off\n"); m->poweroff();
-        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | pwd | cd | ls | cat | read | grep | tcc tools | tool source | tool edit OLD|NEW | tool reset | agent | off\n");
+        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | pwd | cd | ls | cat | read | grep | tcc tools | tcc kernel | tcc all | tcc system | tcc recovery | tcc /src/FILE.c | run [ARGS] | tool source | tool edit OLD|NEW | tool reset | agent | off\n");
     }
 }

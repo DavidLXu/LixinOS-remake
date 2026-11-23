@@ -1,5 +1,6 @@
 /* Synchronous guest TCP stream over the QEMU virt user-network. */
 #include "transport.h"
+#include "../boot/platform.h"
 #include "lwip/init.h"
 #include "lwip/tcp.h"
 #include "lwip/dns.h"
@@ -32,10 +33,7 @@ static unsigned read_pos, count;
 static u32_t deadline;
 
 u32_t sys_now(void) {
-    uint64_t tick, freq;
-    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(tick));
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    return tick / (freq / 1000);
+    return cpu_ticks() / (cpu_frequency() / 1000);
 }
 static int expired(void) { return (int32_t)(sys_now() - deadline) >= 0; }
 static void barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }

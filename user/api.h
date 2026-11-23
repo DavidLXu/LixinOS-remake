@@ -2,6 +2,7 @@
 struct tool_input {
     int cwd;
     char command[2048], kernel[65536], tools[16384];
+    char program[192];
 };
 struct tool_output {
     unsigned length, truncated;

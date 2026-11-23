@@ -8,7 +8,7 @@ from test import ROOT, boot, expect
 
 def exercise(disk):
     with boot(disk) as c:
-        expect(c, None, "1.2.0 build=0 slot=A")
+        expect(c, None, "1.3.0 build=0 slot=A")
         expect(c, "tcc tools", "TCC: EL0 tools ELF ready")
         expect(c, "ls", "\nsrc/\n")
         expect(c, "cd ../../src/.", "kernel> ")
@@ -53,7 +53,7 @@ def exercise(disk):
 def upgrade(disk):
     disk.write_bytes(gzip.decompress((ROOT / "release/harness-demo.img.gz").read_bytes()))
     with boot(disk, launcher=[ROOT / "run.sh", "--upgrade"]) as c:
-        expect(c, None, "Kernel 1.2.0")
+        expect(c, None, "Kernel 1.3.0")
         expect(c, "ls /src", "\nkernel.c\ntools.c\n")
         expect(c, "rollback", "Kernel 1.1.0")
         expect(c, "color", "\nblue\n")

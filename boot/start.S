@@ -66,6 +66,8 @@ ram_blocks:
 .rept 512
 .if block == 0x46000000
     .quad user_pages + 3
+.elseif block >= 0x4e000000 && block < 0x50000000
+    .quad block + 0x600000000007c5
 .else
     .quad block + 0x705
 .endif

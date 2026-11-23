@@ -1,6 +1,6 @@
-# LixinOS 1.2.0
+# LixinOS 1.3.0
 
-一个从零编写的 AArch64 裸机 C 内核。第一代由宿主机交叉编译。启动后，内核可以编辑自己的 C 源码，用客机内的 TinyCC 编译出下一代 ELF，写入磁盘，再把 CPU 控制权交给新内核。第二代可重复整个过程。
+LixinOS 是 AArch64 裸机 C 系统。发布包的启动 ELF 由客机内的 TinyCC 编译。启动时挂载随包的源码卷，客机可以重建自己的内核、TinyCC、ELF 加载器、网络栈、TLS 库和用户态程序。
 
 ## 运行
 
@@ -10,7 +10,7 @@ Linux 或 macOS 上准备 QEMU 的 `qemu-system-aarch64`、POSIX Shell 及 `sha2
 ./run.sh
 ```
 
-启动器默认使用 `build/system.img`，首次使用时创建 1 MiB 的空磁盘。也可以传入一个新的路径，例如 `./run.sh build/experiment.img`。在客机提示符下输入下列命令。
+启动器默认使用 `build/system.img`，首次使用时创建 25 MiB 的空磁盘。也可以传入一个新的路径，例如 `./run.sh build/experiment.img`。在客机提示符下输入下列命令。
 
 ```text
 version
@@ -25,6 +25,40 @@ version
 新盘从 `build=0 slot=A hot=0` 开始。第一次切换后应显示 `build=1 slot=B hot=1 message=hello-from-tcc`，查询备注应返回 `note=my-session`。再执行一次 `build`、`switch` 即可进入第二个客机编译的内核。输入 `rollback` 会切到另一个有效槽并把它设为下次启动的版本。`off` 关闭虚拟机，再次运行启动器可验证冷启动结果。
 
 `source` 显示当前完整内核源文件。`replace OLD|NEW` 替换其中第一次出现的字面文本；宿主端也可以编辑 `src/` 后重新构建种子。客机里的源码修改在成功执行 `switch` 后与 ELF 一起落盘。`build` 只在内存中准备候选 ELF，编译失败会清除候选状态。
+
+## 在客机里从源码重建
+
+`/src` 挂载随包的源码卷。可以离线用 `ls`、`cd`、`grep` 和 `read` 查看其中的目录和文件。下列位置覆盖各个构建目标。
+
+| 路径 | 内容 |
+|---|---|
+| `/src/kernel/`、`/src/kernel.c` | 初始内核模块、交接 ABI、harness 和可编辑的当前内核翻译单元 |
+| `/src/boot/` | AArch64 复位入口、异常交接、页表、ELF 加载和系统构建代码 |
+| `/src/tinycc/`、`/src/bootstrap/`、`/src/musl/`、`/src/sdk/` | TinyCC 源码、目标配置、AArch64 编译运行库、系统 C 运行库和头文件 |
+| `/src/net/`、`/src/lwip/`、`/src/bearssl/`、`/src/cjson/` | VirtIO 网络、TCP/IP、TLS、信任锚、JSON 和模型协议 |
+| `/src/user/`、`/src/tools.c` | 用户态 ABI、C 程序入口、示例应用及可编辑的当前命令工具源码 |
+| `/src/system.build`、`/src/apps.build` | 系统启动 ELF 的逐文件构建清单和用户程序目标清单。应用自己的 `.build` 文件可列出多个 C 或汇编文件 |
+
+在 `kernel>` 下执行一轮完整构建。`tcc all` 检查所有已登记用户程序、编出候选内核，并把包含 TinyCC 和网络栈的新系统 ELF 写到工作盘。`switch` 在线接管候选内核。关机后再启动，会装入工作盘中最近一次校验通过的系统 ELF。
+
+```text
+cat /src/apps.build
+tcc all
+switch
+off
+```
+
+可以分别运行 `tcc kernel`、`tcc tools`、`tcc system`。`tcc recovery` 编译可独立冷启动的恢复 ELF，并写入单独的导出区。恢复 ELF 与常规系统 ELF 使用不同的装载地址，使恢复镜像能够装入工作盘里的系统。系统 ELF 在两个磁盘区域轮换，写入和刷盘后读回验证，再提交记录。启动时检查源码卷标识、记录和 ELF 内容，最新副本损坏时尝试上一份。
+
+普通前台程序可以使用 `main(argc, argv)` 和客机的输出接口。下例会由客机 TCC 分别编译用户态启动代码和应用，再链接成 ELF。`run` 执行最近显式选中的应用。
+
+```text
+cat /src/user/hello.build
+tcc /src/user/hello.build
+run LixinOS
+```
+
+预期输出是 `hello LixinOS`。带独立 `_start` 的单文件程序也可以直接执行 `tcc /src/路径/文件.c`。构建清单里的路径使用客机绝对路径，每行一个文件。源码卷作为只读构建输入发布；当前内核和命令工具的客机修改分别保存在工作盘，`/src/kernel.c` 和 `/src/tools.c` 会显示当前内容。
 
 ## 客机 TCC 用户态命令
 
@@ -90,7 +124,7 @@ llama-server -m qwen2.5-coder-1.5b-instruct-q4_k_m.gguf -c 24576 --alias coder -
 
 发布包中包含一张示例盘。Qwen2.5-Coder-0.5B 使用查询工具增加了 `color` 命令，Qwen2.5-Coder-1.5B 使用通用源码替换修改了 `note` 的输出标签。第二代提交时，两项回归均通过。冷启动后执行 `color` 会得到 `blue`，执行 `note kept` 再执行 `note` 会得到 `memo=kept`。
 
-示例盘保留 1.1.0 两代模型修改的原始启动状态。要在该盘运行 1.2.0 用户工具，可在关机后用下节的升级命令安装新种子。直接运行该盘时，推理端点已配置上面的本地模型端点，查看结果、执行 `agent verify` 或回滚无需启动模型服务。
+示例盘保留 1.1.0 两代模型修改的原始启动状态。要在该盘运行 1.3.0 用户工具，可在关机后用下节的升级命令安装新种子。直接运行该盘时，推理端点已配置上面的本地模型端点，查看结果、执行 `agent verify` 或回滚无需启动模型服务。
 
 ```sh
 mkdir -p build
@@ -98,17 +132,18 @@ mkdir -p build
 ./run.sh build/example.img
 ```
 
-### 从 1.0.0 或 1.1.0 工作盘升级
+### 从 1.0.0、1.1.0 或 1.2.0 工作盘升级
 
-先让使用这张盘的虚拟机关机，然后运行 `./run.sh --upgrade /path/to/system.img`。新种子占用备用槽，保留先前的活动内核及其源码，`rollback` 可以切回。升级安装的是 1.2.0 源码，自定义旧源码保存在旧槽；后续再提交新一代会复用备用槽。普通启动旧盘会继续运行盘中已安装的版本。
+先让使用这张盘的虚拟机关机，然后运行 `./run.sh --upgrade /path/to/system.img`。新种子占用备用槽，保留先前的活动内核及其源码，`rollback` 可以切回。升级安装的是 1.3.0 源码，自定义旧源码保存在旧槽；后续再提交新一代会复用备用槽。普通启动旧盘会继续运行盘中已安装的版本。显式升级会将原有 1 MiB 工作盘扩展到 25 MiB。升级后使用支持完整源码卷的工具；1.2.0 保存过的旧工具可用 `tool previous` 查看。
 
 ### 自我迭代的边界
 
-`src/kernel.c` 和 `src/harness.c` 随源码一起进入客机，模型可以修改命令、驱动和 Harness 本身。VirtIO 网卡、IPv4/DNS/TCP、TLS 客户端和模型协议适配器位于常驻镜像中。更换这些组件、TCC 或加载器仍需通过 `build.sh` 制作新种子。Linux 可使用 AArch64 裸机交叉工具链完成这个步骤。推理服务需要可达，客机通过 QEMU 用户网络直接连接服务，全程使用客机的网络协议栈、RTC、随机数设备和证书验证。
+模型任务目前修改活动内核和 harness 的 C 翻译单元。用户工具支持单独编辑、编译和验收。整机重建读取已发布源码卷中的启动、编译器和网络库源码；这些目录的常规文件编辑器尚未接入客机。推理服务通过客机的网络协议栈访问。
+
 
 ## 自举和切换
 
-- **种子和工具。** `build.sh` 用 Arm GNU 工具链构建种子内核、常驻 ELF 加载器和上游 TinyCC 0.9.28rc 的 AArch64 编译库。构建脚本固定 TinyCC 提交 `f830a1697e159056b75de40a60464bc43ee670a3`。工具库在客机 CPU 上完成预处理、编译和链接，输出写入客机内存。这版自举的对象是 `src/abi.h` 和 `src/kernel.c` 组成的完整内核。常驻加载器、TinyCC 和其 C 运行库由启动镜像提供。
+- **启动和编译。** 日常启动加载客机构建的 `release/boot.elf` 和 `release/sources.img`。恢复 ELF 在空盘上使用内部 TinyCC 按 `/src/kernel/main.c` 编译内核。客机已编辑过的内核使用其当前翻译单元重建。完全从宿主源码检出开始时，`build.sh` 用 Arm GNU 工具链制作一次引导种子，并固定 TinyCC 提交 `f830a1697e159056b75de40a60464bc43ee670a3`。
 - **内核职责。** 可替换的内核实现 PL011 串口、VirtIO 块设备驱动、双槽安装与回滚、源码编辑和命令循环。加载器校验 AArch64 ELF 和段的内存边界，装入段、清零 BSS、重置栈并同步指令缓存。新内核重新初始化设备。
 - **磁盘提交。** 内核将 ELF 和源码写到备用槽，刷盘并读回核验，再写入带代数和校验值的槽头并刷盘。冷启动按提交代数选择有效槽。最近的副本校验失败时，尝试另一槽；两槽均不可用时，启动镜像仍提供种子内核。校验覆盖意外损坏。手动 `switch` 直接发布编译产物。Agent 走带验收和定时器恢复的试运行路径。
 - **在线状态。** 交接结构保留备注和本次开机的切换次数。冷启动会重置这两项。当前采用单核和单个前台 EL0 程序。热切换发生在内核提示符或 harness 交接点。
@@ -116,19 +151,21 @@ mkdir -p build
 ## 从源码构建与验证
 
 ```sh
-./build.sh
 python3 test.py
 python3 test_harness.py
 python3 test_user.py
+python3 test_bootstrap.py
 ```
 
-宿主构建需要 Git、Python 3、C 编译器和带 newlib 的 `aarch64-none-elf-gcc`。Apple Silicon 上可以自动下载并校验 Arm GNU 14.3.Rel1。其他平台在 PATH 中提供同目标的工具链。`build/boot.bin` 存在时，启动器优先使用源码构建产物；干净检出使用经 SHA-256 校验的 `release/boot.bin`。
+上面的测试直接运行发布镜像。开发者要从宿主源码生成最初的种子时，可以运行 `./build.sh` 和 `./run.sh --seed`。这一步使用 Git、Python 3、C 编译器及带 newlib 的 `aarch64-none-elf-gcc`。要由这个种子生成新的发布启动 ELF，可执行 `python3 test_bootstrap.py --seed build/boot.bin --sources build/sources.img --export-recovery build/recovery.elf`。导出的是客机编译、写入磁盘并校验过的 ELF。
 
 测试在临时磁盘上运行真实 QEMU，覆盖两代客机编译、源码修改生效、同一虚拟机内交接、失败构建隔离、冷启动、回滚持久化和损坏槽回退。关机后，测试还从镜像独立读取两代产物，检查 AArch64 ELF 标识及配套源码。
 
 
 `test_harness.py` 使用本地 HTTP 模型协议测试端，覆盖错误修复、独立行为验收、跨任务回归、请求失败、冷启动续接及卡死恢复。`test_live.py` 用真实模型在一次性盘上改变 `note` 命令的输出标签并冷启动核验。可传 `--url` 和 `--model`，用 `--query-only` 验证由小模型添加 `color` 查询命令，HTTPS 密钥通过环境变量 `LIXINOS_MODEL_KEY` 提供。
 
-1.2.0 发布镜像在临时的 AArch64 Alpine Linux 3.21 虚拟机内，用发行版的 QEMU 9.1.2 跑通了 `test.py`、`test_harness.py` 和 `test_user.py`。最后一组测试还核验了用户态故障、超时返回、工具源码冷启动恢复，以及旧工作盘升级后回滚。
+`test_bootstrap.py` 从客机磁盘读出新编译的系统 ELF，再用该 ELF 和源码卷启动一张空盘。新系统自己的 TinyCC 能编译用户程序并重复整机构建。1.3.0 验收中，三份常规系统 ELF 逐字节一致，各为 1,364,020 字节。在当前 Mac 上启动的 AArch64 Alpine Linux 3.21 虚拟机内，发行版 QEMU 9.1.2 重跑了四组发布测试并得到相同的系统 ELF 哈希。测试也核验了 binary64 和 binary128 浮点常量、系统副本损坏回退，以及恢复 ELF 的冷启动。
 
 网络实现使用 lwIP 提交 `0a0452b2c39bdd91e252aef045c115f88f6ca773`、BearSSL 0.6 和 cJSON 1.7.19。对应源码包含在 `third_party/`。构建使用内置 CA 公钥表 `net/anchors.h`，由 BearSSL 的 `brssl ta` 从本次发布的 Mozilla CA 集合生成。
+
+自举运行库使用 musl 1.2.5 的相关源码及头文件，并使用 stb_sprintf 提供格式化输出。两者的源码和许可均随源码卷发布。

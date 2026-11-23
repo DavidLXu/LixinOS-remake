@@ -23,28 +23,11 @@ static char *word(char **tail) {
     *tail = p;
     return start;
 }
-/* Nodes 0 and 1 are / and /src; 2 and 3 are regular source files. */
-static int resolve(int dir, const char *path) {
-    if (*path == '/') dir = 0;
-    while (*path) {
-        while (*path == '/') ++path;
-        if (!*path) break;
-        const char *p = path;
-        while (*path && *path != '/') ++path;
-        unsigned n = path-p;
-        if (dir > 1) return -1;
-        if (n==1 && *p=='.') continue;
-        if (n==2 && p[0]=='.' && p[1]=='.') dir=0;
-        else if (dir==0 && n==3 && p[0]=='s' && p[1]=='r' && p[2]=='c') dir=1;
-        else if (dir==1) {
-            const char *name = n==8 ? "kernel.c" : n==7 ? "tools.c" : "";
-            unsigned i=0; while (name[i] && name[i]==p[i]) ++i;
-            if (i!=n) return -1;
-            dir=n==8 ? 2 : 3;
-        } else return -1;
-        if (*path=='/' && dir>1) return -1;
-    }
-    return dir;
+#include "sourcefs.h"
+static void pathname(unsigned node) {
+    if (!node) return;
+    pathname(sources->entries[node].parent);
+    emit('/'); print(source_at(sources->entries[node].name));
 }
 static unsigned positive(const char *p) {
     unsigned n=0;
@@ -67,26 +50,31 @@ static void command(struct tool_input *in) {
     if (*word(&tail)) { print("too many arguments\n"); return; }
     out->cwd=in->cwd;
     int grep=equal(cmd,"grep"), read=equal(cmd,"read");
-    int node=resolve(in->cwd,grep?b:a);
-    if (equal(cmd,"pwd") && !*a) { print(in->cwd?"/src\n":"/\n"); return; }
+    int node=source_lookup(in->cwd,grep?b:a);
+    if (equal(cmd,"pwd") && !*a) { if (in->cwd) pathname(in->cwd); else emit('/'); emit('\n'); return; }
     if (equal(cmd,"cd") && !*b) {
         if (!*a) node=0;
-        if (node==0 || node==1) out->cwd=node;
+        if (node>=0 && source_isdir(node)) out->cwd=node;
         else print("not a directory\n");
         return;
     }
     if (equal(cmd,"ls") && !*b) {
-        if (node==0) print("src/\n");
-        else if (node==1) print("kernel.c\ntools.c\n");
-        else if (node==2 || node==3) print(node==2?"kernel.c\n":"tools.c\n");
-        else print("path not found\n");
+        if (node<0) print("path not found\n");
+        else if (node==0) print("src/\n");
+        else if (!source_isdir(node)) { print(source_at(sources->entries[node].name)); emit('\n'); }
+        else for (unsigned i=1;i<sources->count;++i) {
+            if (sources->entries[i].parent!=(unsigned)node) continue;
+            print(source_at(sources->entries[i].name));
+            if (source_isdir(i)) emit('/');
+            emit('\n');
+        }
         return;
     }
     if ((!read && !grep && !equal(cmd,"cat")) || (!read && *c) || (equal(cmd,"cat") && *b)) {
         print("invalid arguments\n"); return;
     }
-    if (node!=2 && node!=3) { print("source file required\n"); return; }
-    const char *text=node==2?in->kernel:in->tools;
+    if (node<0 || source_isdir(node)) { print("source file required\n"); return; }
+    const char *text=node==2?in->kernel:node==3?in->tools:source_at(sources->entries[node].offset);
     if (equal(cmd,"cat")) { print(text); return; }
     unsigned first=1, count=0;
     if (read) {
