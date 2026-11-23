@@ -65,6 +65,9 @@ static void command(struct tool_input *in) {
         else if (node<0) print("path not found\n");
         else if (node==0) { print("src/\n"); print("work/\n"); }
         else if (node==source_lookup(0,"/work")) {
+            if (in->counts[0]) print("counts.txt\n");
+            if (in->has_scratch) print("scratch.txt\n");
+            if (in->answer[0]) print("answer.txt\n");
             for (unsigned i=0;i<in->work_count;++i) {
                 print(in->work[i].name); print(".c\n");
                 print(in->work[i].name); print(".build\n");

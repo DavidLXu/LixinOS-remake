@@ -50,7 +50,15 @@ static int load_app(const char *path) {
 }
 static int compile_app(const char *path) {
     tool_ready=0;
-    return compile_input(path,0,1) && load_app(path);
+    if (!compile_input(path,0,1)) {
+        if (!machine.diagnostic[0]) diagnostic(NULL,"TinyCC could not link the requested application inputs");
+        return 0;
+    }
+    if (!load_app(path)) {
+        diagnostic(NULL,"EL0 loader rejected the ELF address range or page permissions. Keep code and static storage within the 1 MiB user image arena.");
+        return 0;
+    }
+    return 1;
 }
 static int tool_compile(const char *source) {
     active_tools=source;
@@ -98,7 +106,6 @@ static int tool_run(const char *line,const char *kernel,const char *tools,int cw
     if (result || out->length>sizeof out->text || (out->cwd<0 || (unsigned)out->cwd>=sources->count || !source_isdir(out->cwd)))
         return result==2 ? -2 : -1;
     if (out->truncated) return -3;
-    if (out->status) return -4;
     *size=out->length; *text=out->text; *next_cwd=out->cwd;
-    return 0;
+    return out->status ? -4 : 0;
 }

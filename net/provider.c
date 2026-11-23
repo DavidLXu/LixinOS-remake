@@ -275,7 +275,9 @@ int package_proposal(const char *url,const char *model,const char *goal,const ch
     cJSON *req=cJSON_CreateObject();
     cJSON_AddStringToObject(req,"model",model);
     cJSON_AddStringToObject(cJSON_AddObjectToObject(req,"response_format"),"type","json_object");
-    cJSON_AddNumberToObject(req,"max_tokens",3000);
+    cJSON_AddNumberToObject(req,"max_tokens",mode==1?8192:3000);
+    if (!strcmp(url,"https://api.deepseek.com/chat/completions") && !strcmp(model,"deepseek-flash"))
+        cJSON_AddStringToObject(cJSON_AddObjectToObject(req,"thinking"),"type","disabled");
     cJSON *messages=cJSON_AddArrayToObject(req,"messages");
     const char *instructions=mode==1?
         "Write one freestanding foreground C program. Return JSON fields source (complete C) and usage "
@@ -283,10 +285,14 @@ int package_proposal(const char *url,const char *model,const char *goal,const ch
         "return 0 on success, nonzero on error. Only the listed SDK functions exist. No libc or stdio. "
         "Tests specify arguments|exact stdout, with one trailing newline implicit. Return numeric output alone when specified." :
         mode==2?
-        "Inspect the guest catalog. If an installed command can perform the task return JSON field command "
-        "with the command line. Use a final absolute glob for all matching files, e.g. /src/user/*.c. "
-        "Each path is passed to a separate invocation. If the capability is missing, return JSON field new_tool "
-        "with the conventional lowercase Unix command name to implement." :
+        "Classify the requested final output before choosing a tool. Return exactly one JSON object. "
+        "A single winning C file by line count under /src/user/ is the longest workflow. "
+        "For that goal, emit only {\"flow\":\"longest\",\"producer\":\"wc\",\"reducer\":\"max\"} when wc is installed; "
+        "max can be absent. The caller cannot interpret a list or pick a winner after a direct command. "
+        "Chinese 最多 or 最长 requests one winner; 各文件的行数 requests the full table. "
+        "Only for a goal fully answered by direct stdout, emit {\"command\":\"installed command with args\"}; "
+        "a final absolute glob runs the tool separately per file. For another missing capability, "
+        "emit {\"new_tool\":\"conventional lowercase command name\"}." :
         "Choose an installed command from the guest catalog to fulfill the task. Return JSON with a single string "
         "field command. For each file in a directory, put an absolute glob like /src/user/*.c as the last argument. "
         "The guest expands it and invokes the command separately for each file, labeling each result. No pipelines.";
@@ -306,8 +312,13 @@ int package_proposal(const char *url,const char *model,const char *goal,const ch
                 field(answer,"usage",out->expected,sizeof out->expected) && out->expected[0] &&
                 c_char_literals(out->after,sizeof out->after) :
                 field(answer,"command",out->command,sizeof out->command) && out->command[0];
+    if (!ok && mode==2 && field(answer,"flow",out->read,sizeof out->read) && !strcmp(out->read,"longest") &&
+        field(answer,"producer",out->command,sizeof out->command) && field(answer,"reducer",out->expected,sizeof out->expected)) ok=3;
     if (!ok && mode==2 && field(answer,"new_tool",out->read,sizeof out->read) && out->read[0]) ok=2;
+    if (!ok) {
+        const char *reason=cJSON_GetStringValue(cJSON_GetObjectItem(choice,"finish_reason"));
+        snprintf(out->message,sizeof out->message,"invalid package response (finish: %.40s)",reason?reason:"unknown");
+    }
     cJSON_Delete(answer); cJSON_Delete(envelope);
-    if (!ok) snprintf(out->message,sizeof out->message,"invalid package response");
     return ok;
 }

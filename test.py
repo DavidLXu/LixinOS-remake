@@ -64,7 +64,7 @@ def disk_record(disk, slot):
     with disk.open("rb") as f:
         f.seek(base)
         epoch, magic, abi, size, source_size = struct.unpack("<QIIII", f.read(24))
-        assert epoch > 0 and magic == 0x31584B4C and abi in (2, 3, 4, 5)
+        assert epoch > 0 and magic == 0x31584B4C and abi in (2, 3, 4, 5, 6)
         f.seek(base + 512)
         image = f.read(size)
         assert image[:7] == b"\x7fELF\x02\x01\x01" and image[18:20] == b"\xb7\0"

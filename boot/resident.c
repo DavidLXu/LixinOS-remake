@@ -195,7 +195,7 @@ void boot_main(void) {
     machine.tool_seed=source_at(sources->entries[3].offset);
     machine.build_system=build_system;
     machine.compile_app=compile_app;
-    machine.compile_apps=compile_apps; machine.packages=packages;
+    machine.compile_apps=compile_apps; machine.packages=packages; machine.save_scratch=save_scratch;
     machine.system_buffer=system_image; machine.boot_system=boot_system;
     u32 fingerprint=2166136261U;
     for (unsigned i=0;i<sources->bytes;++i) fingerprint=(fingerprint^((const u8 *)sources)[i])*16777619U;

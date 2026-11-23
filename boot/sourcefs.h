@@ -37,6 +37,10 @@ static int source_lookup(int cwd,const char *path) {
     return cwd;
 }
 #ifdef LIXINOS_WORK_INPUT
+static int work_name(const char *p,const char *q) {
+    while (*p && *p==*q) { ++p; ++q; }
+    return !*p && !*q;
+}
 /* Resolve the parent using the same cwd and directory rules as /src. */
 static const char *user_work_file(const struct tool_input *in,const char *path) {
     const char *leaf=path;
@@ -50,6 +54,9 @@ static const char *user_work_file(const struct tool_input *in,const char *path) 
     }
     int work=source_lookup(0,"/work");
     if (parent<0 || parent!=work) return 0;
+    if (in->counts[0] && work_name(leaf,"counts.txt")) return in->counts;
+    if (in->answer[0] && work_name(leaf,"answer.txt")) return in->answer;
+    if (in->has_scratch && work_name(leaf,"scratch.txt")) return in->scratch;
     for (unsigned i=0;i<in->work_count;++i) {
         const char *name=in->work[i].name,*p=leaf;
         while (*name && *name==*p) { ++name; ++p; }

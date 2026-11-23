@@ -59,14 +59,14 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 
 
 @contextlib.contextmanager
-def provider(live):
+def provider(live,handler=Fixture):
     if live:
         key = subprocess.check_output(['/usr/bin/security','find-generic-password','-a',pwd.getpwuid(os.getuid()).pw_name,
                                        '-s','LixinOS.DeepSeek','-w'],stderr=subprocess.DEVNULL).decode().strip()
         assert key
         yield None,key
         return
-    with http.server.ThreadingHTTPServer(('127.0.0.1',0),Fixture) as server:
+    with http.server.ThreadingHTTPServer(('127.0.0.1',0),handler) as server:
         worker=threading.Thread(target=server.serve_forever,daemon=True)
         worker.start()
         try:
@@ -88,7 +88,7 @@ def disk_kernel(disk):
 def exercise(disk,url,key):
     expected = {f'/src/user/{p.name}':p.read_bytes().count(b'\n') for p in (ROOT/'user').glob('*.c')}
     with boot(disk,timeout=300) as c:
-        expect(c,None,'1.4.0 build=0 slot=A')
+        expect(c,None,'1.5.0 build=0 slot=A')
         if url:
             c('agent model '+url+' fixture')
         else:
@@ -110,7 +110,7 @@ def exercise(disk,url,key):
         expect(c,'tcc /work/wc.build','application ELF ready')
         expect(c,'run -l wc.build','\n2\n')
     with boot(disk,timeout=300) as c:
-        expect(c,None,'1.4.0 build=0 slot=A hot=0')
+        expect(c,None,'1.5.0 build=0 slot=A hot=0')
         if key:
             c('agent key',secret=key)
         expect(c,'apps stats','application_builds=0 source_writes=0 executions=0')

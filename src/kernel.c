@@ -178,7 +178,7 @@ static int install(int slot) {
     return stage(slot, &r) && publish_header(slot, &r);
 }
 static void banner(void) {
-    say("Kernel 1.4.0 build="); number(BUILD_NUMBER);
+    say("Kernel 1.5.0 build="); number(BUILD_NUMBER);
     say(" slot="); put(m->slot < 0 ? '-' : 'A'+m->slot);
     say(" hot="); number(m->switches);
     say(" message=hello-kernel\n");
@@ -410,9 +410,17 @@ void _start(struct machine *state) {
             say(app_loaded?"TCC: application ELF ready\n":"TCC: application build failed\n");
         } else if (same(cmd,"run") || prefix(cmd,"run ")) {
             const char *text; unsigned size; int cwd;
+            char *redir=cmd;
+            while (*redir && !prefix(redir," > ")) ++redir;
+            int capture=*redir!=0;
+            if (capture) {
+                if (!same(redir+3,"/work/scratch.txt")) { say("run output path must be /work/scratch.txt\n"); continue; }
+                *redir=0;
+            }
             if (!app_path[0]) { say("compile an application first\n"); continue; }
             if (!app_loaded) { tool_compiled=0; app_loaded=m->compile_app(app_path); }
             if (!app_loaded || m->tool_run(cmd[3]?cmd+4:"",m->source,tool_draft,m->cwd,&text,&size,&cwd)) say("application failed\n");
+            else if (capture) say(m->save_scratch(text,size)?"saved /work/scratch.txt\n":"scratch write failed\n");
             else for (unsigned i=0;i<size;++i) put(text[i]);
         } else if (same(cmd,"tool reset")) {
             tool_revision=0; tool_dirty=0; tool_compiled=0; tools_init(disk);

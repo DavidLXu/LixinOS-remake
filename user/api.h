@@ -5,6 +5,8 @@ struct tool_input {
     char program[192];
     unsigned work_count;
     struct { char name[32], code[8192], recipe[128]; } work[5];
+    char counts[8192], answer[320], scratch[8192];
+    unsigned has_scratch;
 };
 struct tool_output {
     unsigned length, truncated;

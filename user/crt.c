@@ -2,6 +2,13 @@
 #include "app.h"
 #define LIXINOS_WORK_INPUT
 #include "sourcefs.h"
+/* TinyCC emits these calls for initialized arrays and aggregate copies. */
+void *memset(void *dst,int value,unsigned long n) {
+    unsigned char *p=dst; while (n--) *p++=(unsigned char)value; return dst;
+}
+void *memcpy(void *dst,const void *src,unsigned long n) {
+    unsigned char *p=dst; const unsigned char *q=src; while (n--) *p++=*q++; return dst;
+}
 static struct tool_output *terminal;
 static struct tool_input *input;
 static struct {
@@ -42,7 +49,8 @@ int putchar(int c) {
     if (terminal->length>=sizeof terminal->text) { terminal->truncated=1; return -1; }
     terminal->text[terminal->length++]=(char)c; return (unsigned char)c;
 }
-int puts(const char *s) { while (*s) if (putchar(*s++)<0) return -1; return putchar('\n'); }
+int putstr(const char *s) { while (*s) if (putchar(*s++)<0) return -1; return 0; }
+int puts(const char *s) { return putstr(s)<0 ? -1 : putchar('\n'); }
 void _start(struct tool_input *in,struct tool_output *out) {
     char *args[65], *p=in->command; int n=1;
     terminal=out; input=in; out->status=1;

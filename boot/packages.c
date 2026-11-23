@@ -16,6 +16,25 @@ struct app_stamp {
 };
 struct app_entry { struct app_source source; struct app_stamp stamp; unsigned base; };
 static struct app_entry entries[APP_COUNT], pending;
+struct result_files { char counts[8192], answer[320]; };
+static struct result_files committed, working;
+static const struct result_files *visible_result=&committed;
+struct result_stamp {
+    unsigned revision, magic;
+    u8 contents[32], producer[32], reducer[32], verifier[32], volume[32], guard[32];
+};
+static struct result_stamp latest_result;
+static char scratch[8192];
+static int has_scratch;
+static int save_scratch(const char *data,unsigned size) {
+    if (size>=sizeof scratch || memchr(data,0,size)) return 0;
+    memcpy(scratch,data,size); scratch[size]=0; has_scratch=1; return 1;
+}
+#define RESULT_BASE (APP_BASE+2*DRAFT_SECTORS+2*APP_COUNT*APP_SECTORS)
+#define RESULT_BANK 20U
+#define RECEIPT_BASE (RESULT_BASE+2*RESULT_BANK)
+struct compatibility { u8 source[32], elf[32], volume[32], guard[32]; };
+static struct compatibility receipts[APP_COUNT];
 static int loaded;
 static unsigned workspace_writes, launches, volume_hashed;
 static unsigned char volume_hash[32];
@@ -41,7 +60,7 @@ static unsigned pkg_base(unsigned index,unsigned bank) {
 }
 static int pkg_name(const char *s) {
     static const char *reserved[]={"agent","apps","help","ls","cd","cat","read","grep","pwd","run",
-        "tcc","tool","off","switch","build","rollback","source","replace","note","version"};
+        "result","tcc","tool","off","switch","build","rollback","source","replace","note","version"};
     if (!*s || strlen(s)>=sizeof pending.source.name) return 0;
     for (const char *p=s;*p;++p) if (*p<'a' || *p>'z') return 0;
     for (unsigned i=0;i<sizeof reserved/sizeof reserved[0];++i) if (!strcmp(s,reserved[i])) return 0;
@@ -91,11 +110,16 @@ static const char *entry_file(const struct app_entry *e,const char *name) {
 }
 static const char *work_file(const char *name) {
     if (strncmp(name,"/work/",6)) return NULL;
+    if (!strcmp(name,"/work/scratch.txt") && has_scratch) return scratch;
+    if (!strcmp(name,"/work/counts.txt") && visible_result->counts[0]) return visible_result->counts;
+    if (!strcmp(name,"/work/answer.txt") && visible_result->answer[0]) return visible_result->answer;
     const char *data=entry_file(&pending,name);
     for (unsigned i=0;i<APP_COUNT && !data;++i) data=entry_file(entries+i,name);
     return data;
 }
 static void copy_workspace(struct tool_input *in) {
+    in->has_scratch=has_scratch; strcpy(in->scratch,scratch);
+    strcpy(in->counts,visible_result->counts); strcpy(in->answer,visible_result->answer);
     for (unsigned i=0;i<=APP_COUNT;++i) {
         const struct app_entry *e=i==APP_COUNT ? &pending : entries+i;
         if (!e->stamp.revision) continue;
@@ -120,19 +144,8 @@ static int catalog(char *buf,unsigned cap) {
     }
     return used;
 }
-static int verify_draft(const char *tools) {
-    struct app_source *s=&pending.source;
-    if (!pending.stamp.revision) { puts("no saved draft"); return 0; }
-    int index=app_index(s->name);
-    if (index<0) for (unsigned i=0;i<APP_COUNT;++i) if (!entries[i].stamp.revision) { index=i; break; }
-    if (index<0) { puts("tool catalog full"); return 0; }
-    if (entries[index].stamp.revision &&
-        !memcmp(pending.stamp.source_hash,entries[index].stamp.source_hash,32) &&
-        !memcmp(volume_hash,entries[index].stamp.volume_hash,32)) {
-        puts("draft already installed"); return 1;
-    }
-    if (!compile_app(s->build)) { puts("application build failed"); return 0; }
-    char checks[sizeof s->tests]; strcpy(checks,s->tests);
+static unsigned check_cases(const char *suite,const char *tools) {
+    char checks[sizeof pending.source.tests]; strcpy(checks,suite);
     char *line=checks; unsigned cases=0;
     while (*line) {
         char *end=strchr(line,'\n'); if (end) *end=0;
@@ -148,7 +161,23 @@ static int verify_draft(const char *tools) {
         }
         ++cases; if (!end) break; line=end+1;
     }
-    if (!cases || !store_entry(index,entries+index,s,tool_size,cases)) { puts("tool install failed"); return 0; }
+    return cases;
+}
+static int verify_draft(const char *tools) {
+    struct app_source *s=&pending.source;
+    if (!pending.stamp.revision) { puts("no saved draft"); return 0; }
+    int index=app_index(s->name);
+    if (index<0) for (unsigned i=0;i<APP_COUNT;++i) if (!entries[i].stamp.revision) { index=i; break; }
+    if (index<0) { puts("tool catalog full"); return 0; }
+    if (entries[index].stamp.revision &&
+        !memcmp(pending.stamp.source_hash,entries[index].stamp.source_hash,32) &&
+        !memcmp(volume_hash,entries[index].stamp.volume_hash,32)) {
+        puts("draft already installed"); return 1;
+    }
+    if (!compile_app(s->build)) { puts("application build failed"); return 0; }
+    unsigned cases=check_cases(s->tests,tools);
+    if (!cases) return 0;
+    if (!store_entry(index,entries+index,s,tool_size,cases)) { puts("tool install failed"); return 0; }
     char hex[65]; hash_text(entries[index].stamp.elf_hash,hex);
     printf("installed %s tests=%u elf=%s\n",s->name,cases,hex);
     return 1;
@@ -161,15 +190,15 @@ static char *argument(char **tail) {
     while (**tail==' ') ++*tail;
     return start;
 }
-static void make_app(char *args,const char *url,const char *model,const char *tools) {
+static int make_app(char *args,const char *url,const char *model,const char *tools) {
     char *name=argument(&args),*tests=argument(&args);
     unsigned n; const char *suite=source_file(tests,&n);
     if (!pkg_name(name) || strncmp(tests,"/src/",5) || !*args || !suite || !n || n>=sizeof pending.source.tests) {
-        puts("agent make NAME /src/FILE.tests GOAL"); return;
+        puts("agent make NAME /src/FILE.tests GOAL"); return 0;
     }
     static char context[12288];
     unsigned bytes; const char *sdk=source_file("/src/user/app.h",&bytes);
-    if (!sdk) return;
+    if (!sdk) return 0;
     struct app_source draft={0};
     strcpy(draft.name,name); strcpy(draft.tests,suite);
     snprintf(draft.path,sizeof draft.path,"/work/%s.c",name);
@@ -179,42 +208,65 @@ static void make_app(char *args,const char *url,const char *model,const char *to
     for (unsigned attempt=0;attempt<3;++attempt) {
         snprintf(context,sizeof context,"Name: %s\nSDK:\n%s\nAcceptance:\n%s\nPrevious source:\n%s\nDiagnostics:\n%s",
                  name,sdk,suite,draft.code,machine.diagnostic);
-        if (!package_proposal(url,model,args,context,1,&answer)) { puts(answer.message); return; }
-        if (!one_line(answer.expected)) { puts("invalid tool usage"); return; }
+        if (!package_proposal(url,model,args,context,1,&answer)) {
+            puts(answer.message);
+            if (strncmp(answer.message,"invalid package response",24)) return 0;
+            snprintf(machine.diagnostic,sizeof machine.diagnostic,"%.512s. Return a concise JSON object with source and usage.",answer.message);
+            continue;
+        }
+        if (!one_line(answer.expected)) { puts("invalid tool usage"); return 0; }
         strcpy(draft.code,answer.after); strcpy(draft.usage,answer.expected);
-        if (!store_entry(APP_COUNT,&pending,&draft,0,0)) { puts("draft save failed"); return; }
+        if (!store_entry(APP_COUNT,&pending,&draft,0,0)) { puts("draft save failed"); return 0; }
         ++workspace_writes;
-        if (verify_draft(tools)) return;
+        if (verify_draft(tools)) return 1;
     }
+    return 0;
 }
-static int execute_one(const char *args,const char *tools) {
+struct capture { char *text; unsigned used,cap; };
+static int emit_output(struct capture *to,const char *data,unsigned n) {
+    if (!to) { _write(1,data,n); return 1; }
+    if (n>=to->cap-to->used || memchr(data,0,n)) { puts("result too large or contains NUL"); return 0; }
+    memcpy(to->text+to->used,data,n); to->used+=n; to->text[to->used]=0;
+    return 1;
+}
+static int execute_one(const char *args,const char *tools,struct capture *to) {
     const char *text; unsigned size; int cwd;
     ++launches;
     int err=tool_run(args,machine.source,tools,machine.cwd,&text,&size,&cwd);
     if (err) { printf("application failed (%d)\n",err); return 0; }
-    _write(1,text,size); return 1;
+    return emit_output(to,text,size);
 }
-static void execute_app(unsigned index,char *args,const char *tools,int audit) {
+static int prepare_installed(unsigned index) {
     struct app_entry *e=entries+index;
-    ensure_volume_hash();
-    if (memcmp(volume_hash,e->stamp.volume_hash,32)) { puts("source volume changed; rebuild and verify tool"); return; }
     tool_size=e->stamp.elf_size;
     if (!package_io(0,e->base+1+SRC_SECTORS,tool_image,tool_size) ||
         !matches(tool_image,tool_size,e->stamp.elf_hash) ||
-        !load_app(e->source.name)) { puts("installed ELF invalid"); return; }
+        !load_app(e->source.name)) { puts("installed ELF invalid"); return 0; }
+    return 1;
+}
+static int execute_app(unsigned index,char *args,const char *tools,int audit,struct capture *to) {
+    struct app_entry *e=entries+index;
+    struct compatibility *r=receipts+index;
+    ensure_volume_hash();
+    if (memcmp(volume_hash,e->stamp.volume_hash,32) && !(matches(r,96,r->guard) &&
+        !memcmp(r->volume,volume_hash,32) && !memcmp(r->elf,e->stamp.elf_hash,32) &&
+        !memcmp(r->source,e->stamp.source_hash,32))) {
+        puts("source volume changed; rebuild and verify tool"); return 0;
+    }
+    if (!prepare_installed(index)) return 0;
     if (audit) {
         char hex[65]; hash_text(e->stamp.elf_hash,hex);
         printf("invoke %s elf=%s\n",e->source.name,hex);
     }
     char *star=strchr(args,'*');
-    if (!star) { execute_one(args,tools); return; }
+    if (!star) return execute_one(args,tools,to);
     char *path=star;
     while (path>args && path[-1]!=' ') --path;
     if (*path!='/' || star==path || star[-1]!='/' || strchr(star+1,'/') || strchr(star+1,' ') || strchr(star+1,'*')) {
-        puts("expected final absolute directory glob"); return;
+        puts("expected final absolute directory glob"); return 0;
     }
     char suffix[128],folder[256],line[2048]; unsigned prefix=path-args,dlen=star-path;
-    if (dlen>=sizeof folder || strlen(star+1)>=sizeof suffix) return;
+    if (dlen>=sizeof folder || strlen(star+1)>=sizeof suffix) return 0;
     strcpy(suffix,star+1); memcpy(folder,path,dlen); folder[dlen]=0;
     int dir=source_lookup(0,folder); unsigned hits=0;
     for (unsigned i=1;dir>=0 && i<sources->count;++i) {
@@ -222,13 +274,15 @@ static void execute_app(unsigned index,char *args,const char *tools,int audit) {
         const char *name=source_at(sources->entries[i].name);
         unsigned n=strlen(name),s=strlen(suffix);
         if (n<s || strcmp(name+n-s,suffix)) continue;
-        if (snprintf(line,sizeof line,"%.*s%s%s",(int)prefix,args,folder,name)>=(int)sizeof line) { puts("expanded path too long"); return; }
-        printf("%s%s ",folder,name);
-        if (!execute_one(line,tools)) return;
+        if (snprintf(line,sizeof line,"%.*s%s%s",(int)prefix,args,folder,name)>=(int)sizeof line) { puts("expanded path too long"); return 0; }
+        if (!emit_output(to,folder,dlen) || !emit_output(to,name,n) || !emit_output(to," ",1) ||
+            !execute_one(line,tools,to)) return 0;
         ++hits;
     }
     if (!hits) puts("no matching files");
+    return hits!=0;
 }
+#include "composition.c"
 static int packages(const char *cmd,const char *url,const char *model,const char *tools,
                     int (*disk_io)(int,unsigned,u8 *,u32),int (*flush)(void),unsigned sectors) {
     package_io=disk_io; package_flush=flush;
@@ -238,7 +292,7 @@ static int packages(const char *cmd,const char *url,const char *model,const char
     }
     if (!loaded) {
         for (unsigned i=0;i<APP_COUNT;++i) read_entry(i,entries+i);
-        read_entry(APP_COUNT,&pending); loaded=1;
+        read_entry(APP_COUNT,&pending); load_results(sectors); loaded=1;
     }
     if (!strcmp(cmd,"apps") || !strcmp(cmd,"help")) {
         char list[1400]; catalog(list,sizeof list);
@@ -255,6 +309,12 @@ static int packages(const char *cmd,const char *url,const char *model,const char
         printf("%s %s\nrevision=%u tests=%u\ninputs=%s\nvolume=%s\nelf=%s\n%s",
             e->source.name,e->source.usage,e->stamp.revision,e->stamp.cases,source,volume,elf,e->source.tests);
         return 1;
+    }
+    if (!strncmp(cmd,"apps recheck ",13)) { recheck_installed(cmd+13,tools,sectors); return 2; }
+    if (!strcmp(cmd,"result info")) { result_info(); return 1; }
+    if (!strcmp(cmd,"result verify") || !strncmp(cmd,"result verify ",14)) {
+        const char *args=cmd[13]?cmd+14:"/work/counts.txt /work/answer.txt";
+        u8 verifier[32]; verify_result(args,tools,verifier); return 2;
     }
     if (!strcmp(cmd,"apps stats")) {
         printf("application_builds=%u source_writes=%u executions=%u\n",app_builds,workspace_writes,launches); return 1;
@@ -278,6 +338,11 @@ static int packages(const char *cmd,const char *url,const char *model,const char
         if (!count && !choose) return 1;
         int result=package_proposal(url,model,goal,count?list:"(empty)",choose?2:0,&answer);
         if (!result) { puts(answer.message); return 1; }
+        if (result==3) {
+            if (suite || sectors<RECEIPT_BASE+APP_COUNT) { puts("composition unavailable"); return 1; }
+            compose_longest(answer.command,answer.expected,url,model,tools);
+            return 2;
+        }
         if (result==2) {
             if (!pkg_name(answer.read) || app_index(answer.read)>=0) { puts("invalid new tool selection"); return 1; }
             printf("missing capability: %s\n",answer.read);
@@ -292,5 +357,5 @@ static int packages(const char *cmd,const char *url,const char *model,const char
     }
     char *args=line,*name=argument(&args); int index=app_index(name);
     if (index<0) { if (audit) puts("selected command is not installed"); return audit; }
-    execute_app(index,args,tools,audit); return 2;
+    execute_app(index,args,tools,audit,NULL); return 2;
 }
