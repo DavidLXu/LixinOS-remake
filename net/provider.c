@@ -267,3 +267,47 @@ int propose(const char *url,const char *model,const char *goal,const char *sourc
 
     return ok ? 1 : -1;
 }
+
+/* Each call starts a new exchange. Package discovery sends the current catalog. */
+int package_proposal(const char *url,const char *model,const char *goal,const char *context,
+                     int mode,struct proposal *out) {
+    memset(out,0,sizeof *out);
+    cJSON *req=cJSON_CreateObject();
+    cJSON_AddStringToObject(req,"model",model);
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(req,"response_format"),"type","json_object");
+    cJSON_AddNumberToObject(req,"max_tokens",3000);
+    cJSON *messages=cJSON_AddArrayToObject(req,"messages");
+    const char *instructions=mode==1?
+        "Write one freestanding foreground C program. Return JSON fields source (complete C) and usage "
+        "(one line describing arguments and purpose). Include app.h. Implement int main(int argc,char **argv); "
+        "return 0 on success, nonzero on error. Only the listed SDK functions exist. No libc or stdio. "
+        "Tests specify arguments|exact stdout, with one trailing newline implicit. Return numeric output alone when specified." :
+        mode==2?
+        "Inspect the guest catalog. If an installed command can perform the task return JSON field command "
+        "with the command line. Use a final absolute glob for all matching files, e.g. /src/user/*.c. "
+        "Each path is passed to a separate invocation. If the capability is missing, return JSON field new_tool "
+        "with the conventional lowercase Unix command name to implement." :
+        "Choose an installed command from the guest catalog to fulfill the task. Return JSON with a single string "
+        "field command. For each file in a directory, put an absolute glob like /src/user/*.c as the last argument. "
+        "The guest expands it and invokes the command separately for each file, labeling each result. No pipelines.";
+    const char *roles[]={"system","user","user"}, *items[]={instructions,context,goal};
+    for (unsigned i=0;i<3;++i) {
+        cJSON *turn=cJSON_CreateObject(); cJSON_AddItemToArray(messages,turn);
+        cJSON_AddStringToObject(turn,"role",roles[i]); cJSON_AddStringToObject(turn,"content",items[i]);
+    }
+    char *wire=cJSON_PrintUnformatted(req); cJSON_Delete(req);
+    int ok=wire && request(url,wire,out->message,sizeof out->message);
+    free(wire); if (!ok) return 0;
+    cJSON *envelope=cJSON_Parse(reply);
+    cJSON *choice=cJSON_GetArrayItem(cJSON_GetObjectItem(envelope,"choices"),0);
+    char *content=cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(choice,"message"),"content"));
+    cJSON *answer=content?cJSON_ParseWithOpts(content,NULL,1):NULL;
+    ok=mode==1 ? field(answer,"source",out->after,sizeof out->after) && out->after[0] &&
+                field(answer,"usage",out->expected,sizeof out->expected) && out->expected[0] &&
+                c_char_literals(out->after,sizeof out->after) :
+                field(answer,"command",out->command,sizeof out->command) && out->command[0];
+    if (!ok && mode==2 && field(answer,"new_tool",out->read,sizeof out->read) && out->read[0]) ok=2;
+    cJSON_Delete(answer); cJSON_Delete(envelope);
+    if (!ok) snprintf(out->message,sizeof out->message,"invalid package response");
+    return ok;
+}

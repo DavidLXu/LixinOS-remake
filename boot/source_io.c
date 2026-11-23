@@ -2,16 +2,24 @@
 struct reader_fd { const char *data; unsigned pos, size; };
 static struct reader_fd readers[48];
 static const char *active_tools;
-static int source_open(const char *name) {
+static const char *work_file(const char *name);
+static const char *source_file(const char *name,unsigned *size) {
+    const char *work=work_file(name);
+    if (work) { *size=strlen(work); return work; }
     int node=source_lookup(1,name);
-    if (node<0 || source_isdir(node)) { errno=ENOENT; return -1; }
+    if (node<0 || source_isdir(node)) return NULL;
+    const struct source_entry *e=sources->entries+node;
+    *size=e->size;
+    if (node==2 && machine.source_len) { *size=machine.source_len; return machine.source; }
+    if (node==3 && active_tools) { *size=strlen(active_tools); return active_tools; }
+    return source_at(e->offset);
+}
+static int source_open(const char *name) {
+    unsigned size;
+    const char *data=source_file(name,&size);
+    if (!data) { errno=ENOENT; return -1; }
     for (unsigned i=0;i<sizeof readers/sizeof readers[0];++i) {
         if (readers[i].data) continue;
-        const struct source_entry *e=sources->entries+node;
-        const char *data=source_at(e->offset);
-        unsigned size=e->size;
-        if (node==2 && machine.source_len) { data=machine.source; size=machine.source_len; }
-        if (node==3 && active_tools) { data=active_tools; size=strlen(data); }
         readers[i]=(struct reader_fd){data,0,size};
         return i+4;
     }

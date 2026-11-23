@@ -178,7 +178,7 @@ static int install(int slot) {
     return stage(slot, &r) && publish_header(slot, &r);
 }
 static void banner(void) {
-    say("Kernel 1.3.0 build="); number(BUILD_NUMBER);
+    say("Kernel 1.4.0 build="); number(BUILD_NUMBER);
     say(" slot="); put(m->slot < 0 ? '-' : 'A'+m->slot);
     say(" hot="); number(m->switches);
     say(" message=hello-kernel\n");
@@ -319,6 +319,7 @@ static int query_command(const char *cmd) {
     return 1;
 }
 #include "harness.c"
+static int flush_disk(void) { return io(4,0); }
 void _start(struct machine *state) {
     m = state;
     if (m->abi != ABI_VERSION) { say("unsupported handoff\n"); for (;;) {} }
@@ -350,6 +351,13 @@ void _start(struct machine *state) {
     for (;;) {
         say("kernel> ");
         if (!input_line(cmd, sizeof cmd, 1)) { say("line too long\n"); continue; }
+        if (disk) {
+            int action=m->packages(cmd,job.url,job.model,tool_draft,blocks,flush_disk,regs[0x100/4]);
+            if (action) {
+                if (action==2) tool_compiled=app_loaded=0;
+                continue;
+            }
+        }
         if (query_command(cmd)) continue;
         else if (same(cmd,"agent") || prefix(cmd,"agent ")) {
             ready = 0; if (disk) agent_command(cmd); else say("agent needs a disk\n");
@@ -394,7 +402,7 @@ void _start(struct machine *state) {
                 say("TCC: applications and kernel ready\n");
             }
             build_system_disk(same(cmd,"tcc recovery"));
-        } else if (prefix(cmd,"tcc /src/") && !same(cmd,"tcc /src/kernel.c")) {
+        } else if ((prefix(cmd,"tcc /src/") || prefix(cmd,"tcc /work/")) && !same(cmd,"tcc /src/kernel.c")) {
             tool_compiled=0;
             app_loaded=length(cmd+4)<sizeof app_path && m->compile_app(cmd+4);
             if (app_loaded) copy((u8 *)app_path,(u8 *)cmd+4,length(cmd+4)+1);
@@ -436,6 +444,6 @@ void _start(struct machine *state) {
             say("rollback unavailable\n");
         } else if (same(cmd,"off")) {
             say("power off\n"); m->poweroff();
-        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | pwd | cd | ls | cat | read | grep | tcc tools | tcc kernel | tcc all | tcc system | tcc recovery | tcc /src/FILE.c | run [ARGS] | tool source | tool edit OLD|NEW | tool reset | agent | off\n");
+        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | pwd | cd | ls | cat | read | grep | tcc tools | tcc kernel | tcc all | tcc system | tcc recovery | tcc /src/FILE.c | run [ARGS] | tool source | tool edit OLD|NEW | tool reset | agent | apps | agent task | agent make | agent use | off\n");
     }
 }

@@ -15,11 +15,13 @@ def tree(name, path, suffixes):
     for p in sorted(path.rglob('*')):
         if p.is_file() and p.suffix in suffixes and not re.search(r' \d+\.',p.name):
             add(name+'/'+str(p.relative_to(path)),p)
-add('kernel.c',build/'kernel.c')
-add('tools.c',build/'tools.c')
+kernel=(root/'src/abi.h').read_bytes()+(root/'src/kernel.c').read_bytes().replace(
+    b'#include "harness.c"',(root/'src/harness.c').read_bytes())
+files['kernel.c']=kernel
+files['tools.c']=(root/'user/tools.c').read_bytes().replace(b'#include "api.h"',(root/'user/api.h').read_bytes()).replace(b'#include "sourcefs.h"',(root/'boot/sourcefs.h').read_bytes())
 tree('kernel',root/'src',{'.c','.h'})
 tree('user',root/'user',{'.c','.h','.build'})
-tree('validation',root/'validation',{'.c','.build'})
+tree('validation',root/'validation',{'.c','.build','.txt','.tests'})
 tree('boot',root/'boot',{'.h','.c','.S','.ld'})
 tree('net',root/'net',{'.c','.h'})
 tiny=build/'tinycc'
@@ -82,6 +84,7 @@ for rel in sorted(files):
     for part in rel.split('/'):
         path+='/'+part
         if path not in index: index[path]=len(paths); paths.append(path)
+index['/work']=len(paths); paths.append('/work')
 volume=bytearray(16+16*len(paths))
 for i,path in enumerate(paths):
     parent=index.get(str(Path(path).parent),0)

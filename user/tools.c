@@ -23,6 +23,7 @@ static char *word(char **tail) {
     *tail = p;
     return start;
 }
+#define LIXINOS_WORK_INPUT
 #include "sourcefs.h"
 static void pathname(unsigned node) {
     if (!node) return;
@@ -51,6 +52,7 @@ static void command(struct tool_input *in) {
     out->cwd=in->cwd;
     int grep=equal(cmd,"grep"), read=equal(cmd,"read");
     int node=source_lookup(in->cwd,grep?b:a);
+    const char *work=node<0?user_work_file(in,grep?b:a):0;
     if (equal(cmd,"pwd") && !*a) { if (in->cwd) pathname(in->cwd); else emit('/'); emit('\n'); return; }
     if (equal(cmd,"cd") && !*b) {
         if (!*a) node=0;
@@ -59,8 +61,15 @@ static void command(struct tool_input *in) {
         return;
     }
     if (equal(cmd,"ls") && !*b) {
-        if (node<0) print("path not found\n");
-        else if (node==0) print("src/\n");
+        if (work) { print(a); emit('\n'); }
+        else if (node<0) print("path not found\n");
+        else if (node==0) { print("src/\n"); print("work/\n"); }
+        else if (node==source_lookup(0,"/work")) {
+            for (unsigned i=0;i<in->work_count;++i) {
+                print(in->work[i].name); print(".c\n");
+                print(in->work[i].name); print(".build\n");
+            }
+        }
         else if (!source_isdir(node)) { print(source_at(sources->entries[node].name)); emit('\n'); }
         else for (unsigned i=1;i<sources->count;++i) {
             if (sources->entries[i].parent!=(unsigned)node) continue;
@@ -73,8 +82,8 @@ static void command(struct tool_input *in) {
     if ((!read && !grep && !equal(cmd,"cat")) || (!read && *c) || (equal(cmd,"cat") && *b)) {
         print("invalid arguments\n"); return;
     }
-    if (node<0 || source_isdir(node)) { print("source file required\n"); return; }
-    const char *text=node==2?in->kernel:node==3?in->tools:source_at(sources->entries[node].offset);
+    if (!work && (node<0 || source_isdir(node))) { print("source file required\n"); return; }
+    const char *text=work?work:node==2?in->kernel:node==3?in->tools:source_at(sources->entries[node].offset);
     if (equal(cmd,"cat")) { print(text); return; }
     unsigned first=1, count=0;
     if (read) {

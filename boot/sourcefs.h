@@ -36,4 +36,30 @@ static int source_lookup(int cwd,const char *path) {
     }
     return cwd;
 }
+#ifdef LIXINOS_WORK_INPUT
+/* Resolve the parent using the same cwd and directory rules as /src. */
+static const char *user_work_file(const struct tool_input *in,const char *path) {
+    const char *leaf=path;
+    for (const char *p=path;*p;++p) if (*p=='/') leaf=p+1;
+    int parent=in->cwd;
+    if (leaf!=path) {
+        char dir[256]; unsigned len=leaf-path;
+        if (len>=sizeof dir) return 0;
+        for (unsigned i=0;i<len;++i) dir[i]=path[i];
+        dir[len]=0; parent=source_lookup(in->cwd,dir);
+    }
+    int work=source_lookup(0,"/work");
+    if (parent<0 || parent!=work) return 0;
+    for (unsigned i=0;i<in->work_count;++i) {
+        const char *name=in->work[i].name,*p=leaf;
+        while (*name && *name==*p) { ++name; ++p; }
+        if (*name || *p++!='.') continue;
+        if (p[0]=='c' && !p[1]) return in->work[i].code;
+        const char *ext="build";
+        while (*ext && *ext==*p) { ++ext; ++p; }
+        if (!*ext && !*p) return in->work[i].recipe;
+    }
+    return 0;
+}
+#endif
 #endif

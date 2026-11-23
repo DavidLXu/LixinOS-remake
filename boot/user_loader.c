@@ -26,11 +26,11 @@ static void permit_data(void *base, unsigned bytes) {
     unsigned i=((u64)base-USER_BASE)/PAGE;
     for (unsigned n=0;n<bytes;n+=PAGE) permissions[i++]=USER_RW;
 }
-static int compile_app(const char *path) {
+static int load_app(const char *path) {
     tool_ready=0;
     if (strlen(path)>=sizeof program_name) return 0;
     strcpy(program_name,path);
-    if (!compile_input(path,0,1) || !valid_range(tool_image,tool_size,USER_BASE,USER_BASE+0x100000)) return 0;
+    if (!valid_range(tool_image,tool_size,USER_BASE,USER_BASE+0x100000)) return 0;
     const struct elf_header *h=(const void *)tool_image;
     const struct program_header *ph=(const void *)(tool_image+h->phoff);
     memset(permissions,0,sizeof permissions);
@@ -47,6 +47,10 @@ static int compile_app(const char *path) {
     }
     tool_ready=1;
     return 1;
+}
+static int compile_app(const char *path) {
+    tool_ready=0;
+    return compile_input(path,0,1) && load_app(path);
 }
 static int tool_compile(const char *source) {
     active_tools=source;
@@ -67,6 +71,7 @@ static int compile_apps(const char *tools) {
     }
     return 1;
 }
+static void copy_workspace(struct tool_input *in);
 static int tool_run(const char *line,const char *kernel,const char *tools,int cwd,
                     const char **text,unsigned *size,int *next_cwd) {
     if (!tool_ready) return -1;
@@ -81,6 +86,7 @@ static int tool_run(const char *line,const char *kernel,const char *tools,int cw
         if (ph[i].type==1) memcpy((void *)ph[i].va,tool_image+ph[i].offset,ph[i].file);
     in->cwd=out->cwd=cwd;
     strcpy(in->program,program_name); strcpy(in->command,line); strcpy(in->kernel,kernel); strcpy(in->tools,tools);
+    copy_workspace(in);
     permit_data(in,sizeof *in); permit_data(out,sizeof *out);
     permit_data((void *)(USER_BASE+0x1f0000),0x10000);
     set_user_pages(1);
@@ -92,6 +98,7 @@ static int tool_run(const char *line,const char *kernel,const char *tools,int cw
     if (result || out->length>sizeof out->text || (out->cwd<0 || (unsigned)out->cwd>=sources->count || !source_isdir(out->cwd)))
         return result==2 ? -2 : -1;
     if (out->truncated) return -3;
+    if (out->status) return -4;
     *size=out->length; *text=out->text; *next_cwd=out->cwd;
     return 0;
 }

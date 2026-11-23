@@ -1,0 +1,3 @@
+-l /src/validation/empty.txt|0
+-l /src/validation/terminated.txt|2
+-l /src/validation/unterminated.txt|1

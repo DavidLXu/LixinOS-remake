@@ -86,9 +86,9 @@ static void diagnostic(void *ignored, const char *s) {
 static int add_inputs(TCCState *t,const char *path) {
     unsigned n=strlen(path);
     if (n<6 || strcmp(path+n-6,".build")) return tcc_add_file(t,path)==0;
-    int id=source_lookup(0,path);
-    if (id<0 || source_isdir(id)) return 0;
-    const char *p=source_at(sources->entries[id].offset);
+    unsigned bytes;
+    const char *p=source_file(path,&bytes);
+    if (!p) return 0;
     while (*p) {
         const char *end=strchr(p,'\n'); char filename[256];
         if (!end || end==p || (unsigned)(end-p)>=sizeof filename) return 0;
@@ -97,7 +97,9 @@ static int add_inputs(TCCState *t,const char *path) {
     }
     return 1;
 }
+static unsigned app_builds;
 static int compile_input(const char *path,unsigned generation,int user) {
+    if (user) ++app_builds;
     char value[24];
     machine.diagnostic[0] = 0;
     TCCState *t = tcc_new();
@@ -186,13 +188,14 @@ static void enter(struct machine *m) {
 }
 #include "selfbuild.c"
 #include "user_loader.c"
+#include "packages.c"
 void boot_main(void) {
     if (!source_valid()) { _write(2,"invalid source volume\n",22); abort(); }
     machine.abi = ABI_VERSION;
     machine.tool_seed=source_at(sources->entries[3].offset);
     machine.build_system=build_system;
     machine.compile_app=compile_app;
-    machine.compile_apps=compile_apps;
+    machine.compile_apps=compile_apps; machine.packages=packages;
     machine.system_buffer=system_image; machine.boot_system=boot_system;
     u32 fingerprint=2166136261U;
     for (unsigned i=0;i<sources->bytes;++i) fingerprint=(fingerprint^((const u8 *)sources)[i])*16777619U;

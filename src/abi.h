@@ -5,7 +5,7 @@ typedef unsigned int u32;
 typedef unsigned long u64;
 #define IMAGE_CAP (256 * 1024)
 #define SOURCE_CAP (64 * 1024)
-#define ABI_VERSION 4
+#define ABI_VERSION 5
 #define SYSTEM_CAP (6U*1024*1024)
 struct proposal {
     char read[128], before[6144], after[8192], command[128], expected[256], message[512];
@@ -44,4 +44,7 @@ struct machine {
     u32 volume_id;
     void (*boot_system)(const u8 *image,unsigned size);
     int (*compile_apps)(const char *tools);
+    int (*packages)(const char *cmd, const char *url, const char *model, const char *tools,
+                    int (*disk_io)(int,unsigned,u8 *,u32), int (*flush)(void), unsigned sectors);
+
 };
