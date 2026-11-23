@@ -12,7 +12,7 @@ struct job {
     unsigned edit_offset;
     char last_before[6144], last_after[8192];
 };
-typedef char journal_must_fit_slot[(sizeof(struct job) <= (1024-651)*512) ? 1 : -1];
+typedef char journal_must_fit_slot[(sizeof(struct job) <= (960-651)*512) ? 1 : -1];
 struct stamp { u32 magic, size, checksum, serial, guard; };
 static struct job job;
 static unsigned serial;

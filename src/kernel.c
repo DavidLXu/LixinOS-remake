@@ -135,7 +135,7 @@ struct record {
 static unsigned base(int slot) { return slot * 1024; }
 static int header(int slot, struct record *r) {
     if (!blocks(0, base(slot), (u8 *)r, sizeof(*r))) return 0;
-    return r->magic == 0x31584b4c && (r->abi == 1 || r->abi == ABI_VERSION) && r->epoch &&
+    return r->magic == 0x31584b4c && (r->abi >= 1 && r->abi <= ABI_VERSION) && r->epoch &&
         r->elf_len && r->elf_len <= IMAGE_CAP && r->src_len && r->src_len < SOURCE_CAP &&
         r->header_hash == digest(r, (u8 *)&r->header_hash - (u8 *)r);
 }
@@ -178,7 +178,7 @@ static int install(int slot) {
     return stage(slot, &r) && publish_header(slot, &r);
 }
 static void banner(void) {
-    say("Kernel 1.1.0 build="); number(BUILD_NUMBER);
+    say("Kernel 1.2.0 build="); number(BUILD_NUMBER);
     say(" slot="); put(m->slot < 0 ? '-' : 'A'+m->slot);
     say(" hot="); number(m->switches);
     say(" message=hello-kernel\n");
@@ -206,9 +206,64 @@ static int replace(char *expr) {
     }
     return 0;
 }
+/* Each slot reserves its last 64 sectors for an independent tool source bank. */
+struct tool_stamp { u32 magic, revision, size, hash, guard; };
+static char tool_draft[16384];
+static u32 tool_revision;
+static int tool_disk, tool_compiled, tool_dirty;
+static unsigned tool_bank(unsigned bank) { return base(bank)+960; }
+static int tool_header(unsigned bank, struct tool_stamp *h) {
+    return blocks(0,tool_bank(bank),(u8 *)h,sizeof *h) && h->magic==0x544f4f4c &&
+        h->revision && h->revision%2==bank && h->size && h->size<sizeof tool_draft &&
+        h->guard==digest(h,16);
+}
+static void tools_init(int disk) {
+    struct tool_stamp h[2];
+    int valid[2]={0,0};
+    tool_disk=disk;
+    if (disk) for (unsigned i=0;i<2;++i) valid[i]=tool_header(i,&h[i]);
+    unsigned newest=valid[1] && (!valid[0] || h[1].revision>h[0].revision);
+    for (unsigned n=0;n<2;++n) {
+        unsigned i=newest^n;
+        if (valid[i] && blocks(0,tool_bank(i)+1,(u8 *)tool_draft,h[i].size) &&
+            digest(tool_draft,h[i].size)==h[i].hash) {
+            tool_revision=h[i].revision; tool_draft[h[i].size]=0; return;
+        }
+    }
+    unsigned size=length(m->tool_seed);
+    if (size<sizeof tool_draft) copy((u8 *)tool_draft,(const u8 *)m->tool_seed,size+1);
+}
+static int save_tools(void) {
+    struct tool_stamp h;
+    h.magic=0x544f4f4c; h.revision=tool_revision+1; h.size=length(tool_draft);
+    h.hash=digest(tool_draft,h.size); h.guard=digest(&h,16);
+    unsigned b=tool_bank(h.revision%2);
+    if (!tool_disk || !h.revision || !blocks(1,b+1,(u8 *)tool_draft,h.size) || !io(4,0) ||
+        !blocks(1,b,(u8 *)&h,sizeof h) || !io(4,0)) return 0;
+    tool_revision=h.revision;
+    return 1;
+}
+static int named(const char *cmd,const char *name) {
+    unsigned n=length(name); return prefix(cmd,name) && (!cmd[n] || cmd[n]==' ');
+}
+static void run_tool(const char *cmd) {
+    if (tool_dirty) { say("compile tool edits with tcc tools first\n"); return; }
+    if (!tool_compiled) tool_compiled=m->tool_compile(tool_draft);
+    if (!tool_compiled) { say("TCC: tool build failed\n"); return; }
+    const char *text; unsigned size; int cwd;
+    int result=m->tool_run(cmd,m->source,tool_draft,m->cwd,&text,&size,&cwd);
+    if (result) {
+        if (result==-3) say("user output too large\n");
+        else say(result==-2?"user program timed out\n":"user program fault\n");
+        return;
+    }
+    if (named(cmd,"cd")) m->cwd=cwd;
+    for (unsigned i=0;i<size;++i) put(text[i]);
+}
 /* Pure console queries also form the behavioral acceptance interface. */
 static int query_command(const char *cmd) {
     if (same(cmd,"version")) banner();
+    else if (named(cmd,"pwd") || named(cmd,"ls") || named(cmd,"read") || named(cmd,"cat") || named(cmd,"grep")) run_tool(cmd);
     else if (same(cmd,"note")) { say("note="); say(m->note); put('\n'); }
     else return 0;
     return 1;
@@ -226,7 +281,7 @@ void _start(struct machine *state) {
         for (int attempt=0; attempt<2; ++attempt) {
             int current=attempt ? 1-first : first;
             if (!load_record(current,&r)) continue;
-            if (m->upgrade && r.abi == 1) {
+            if (m->upgrade && r.abi < ABI_VERSION) {
                 m->epoch = r.epoch; m->upgrade = 0;
                 if (install(1-current) && load_record(1-current,&r)) select_record(1-current,&r);
                 if (!load_record(current,&r)) { say("upgrade recovery failed\n"); for (;;) {} }
@@ -236,6 +291,7 @@ void _start(struct machine *state) {
         /* Give the first self-build a bootable predecessor for rollback. */
         if (install(0)) { m->slot = 0; m->epoch = 1; }
     }
+    tools_init(disk);
     banner();
     if (disk) agent_boot();
     int ready = 0;
@@ -246,6 +302,29 @@ void _start(struct machine *state) {
         if (query_command(cmd)) continue;
         else if (same(cmd,"agent") || prefix(cmd,"agent ")) {
             ready = 0; if (disk) agent_command(cmd); else say("agent needs a disk\n");
+        }
+        else if (named(cmd,"cd")) run_tool(cmd);
+        else if (same(cmd,"tool source")) say(tool_draft);
+        else if (prefix(cmd,"tool edit ")) {
+            char *expr=cmd+10, *with=expr;
+            while (*with && *with!='|') ++with;
+            if (!*with || with==expr) { say("tool edit OLD|NEW\n"); continue; }
+            *with++=0;
+            unsigned n=length(tool_draft), old=length(expr), fresh=length(with);
+            char *at=tool_draft;
+            while (*at && !prefix(at,expr)) ++at;
+            if (!*at || n-old+fresh>=sizeof tool_draft) { say("tool edit failed\n"); continue; }
+            memmove(at+fresh,at+old,length(at+old)+1);
+            copy((u8 *)at,(const u8 *)with,fresh);
+            tool_dirty=1; say("tool draft changed\n");
+        } else if (same(cmd,"tcc tools")) {
+            tool_compiled=m->tool_compile(tool_draft);
+            if (!tool_compiled) say("TCC: tool build failed\n");
+            else if (tool_dirty && !save_tools()) say("tool save failed\n");
+            else { tool_dirty=0; say("TCC: EL0 tools ELF ready\n"); }
+        } else if (same(cmd,"tool reset")) {
+            tool_revision=0; tool_dirty=0; tool_compiled=0; tools_init(disk);
+            say("tool draft reloaded\n");
         }
         else if (same(cmd,"source")) say(m->source);
         else if (prefix(cmd,"replace ")) {
@@ -273,6 +352,6 @@ void _start(struct machine *state) {
             say("rollback unavailable\n");
         } else if (same(cmd,"off")) {
             say("power off\n"); m->poweroff();
-        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | agent | off\n");
+        } else say("version | source | replace OLD|NEW | build | switch | rollback | note [TEXT] | pwd | cd | ls | cat | read | grep | tcc tools | tool source | tool edit OLD|NEW | tool reset | agent | off\n");
     }
 }

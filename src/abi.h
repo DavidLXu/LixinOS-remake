@@ -5,7 +5,7 @@ typedef unsigned int u32;
 typedef unsigned long u64;
 #define IMAGE_CAP (256 * 1024)
 #define SOURCE_CAP (64 * 1024)
-#define ABI_VERSION 2
+#define ABI_VERSION 3
 struct proposal {
     char read[128], before[6144], after[8192], command[128], expected[256], message[512];
 };
@@ -31,4 +31,9 @@ struct machine {
     int (*probe)(const char *url, const char *model, char *message, unsigned cap);
     void (*end_trial)(void);
     void (*set_key)(const char *url, const char *key);
+    const char *tool_seed;
+    int (*tool_compile)(const char *source);
+    int (*tool_run)(const char *line, const char *kernel, const char *tools, int cwd,
+                    const char **text, unsigned *size, int *next_cwd);
+    int cwd;
 };

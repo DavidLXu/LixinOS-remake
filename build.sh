@@ -29,6 +29,7 @@ python3 - <<'PY_SOURCE'
 from pathlib import Path
 kernel = Path('src/kernel.c').read_text().replace('#include "harness.c"', Path('src/harness.c').read_text())
 Path('build/kernel.c').write_text(Path('src/abi.h').read_text() + kernel)
+Path('build/tools.c').write_text(Path('user/tools.c').read_text().replace('#include "api.h"', Path('user/api.h').read_text()))
 PY_SOURCE
 $cc $flags -ffreestanding -nostdlib -Wl,-T,boot/kernel.ld,--build-id=none build/kernel.c -o build/seed.elf
 aarch64-none-elf-strip build/seed.elf
@@ -40,6 +41,9 @@ seed_begin: .incbin "build/seed.elf"
 seed_end:
 source_begin: .incbin "build/kernel.c"
 source_end:
+.global tool_source
+tool_source: .incbin "build/tools.c"
+.byte 0
 ASM
 # Only the ELF compiler/linker is needed. Omit TinyCC's POSIX in-process runner.
 mkdir -p build/tinycc
@@ -56,6 +60,6 @@ cc -DC2STR build/tinycc/conftest.c -o build/c2str
 build/c2str build/tinycc/include/tccdefs.h build/tinycc/tccdefs_.h
 $cc $flags -Iboot -Ibuild/tinycc -c build/tinycc/libtcc.c -o build/tcc.o
 ./net/build.sh
-$cc $flags -Isrc -Inet -Ithird_party -Ibuild/net/bearssl-0.6/inc -Ibuild/net/lwip/src/include -Ibuild/tinycc -nostartfiles -Wl,--gc-sections,--build-id=none,-T,boot/resident.ld \
+$cc $flags -Isrc -Iuser -Inet -Ithird_party -Ibuild/net/bearssl-0.6/inc -Ibuild/net/lwip/src/include -Ibuild/tinycc -nostartfiles -Wl,--gc-sections,--build-id=none,-T,boot/resident.ld \
     boot/start.S boot/resident.c build/assets.S build/tcc.o net/transport.c net/provider.c third_party/cJSON.c build/net/lwip.a build/net/bearssl-0.6/build/libbearssl.a -lc -lm -lnosys -lgcc -o build/boot.elf
 aarch64-none-elf-objcopy -O binary build/boot.elf build/boot.bin

@@ -1,4 +1,5 @@
 #include "abi.h"
+#include "api.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -16,13 +17,18 @@ extern void set_key(const char *, const char *);
 static struct machine machine;
 static unsigned cursor;
 static int output_open;
+static u8 tool_image[IMAGE_CAP];
+static unsigned tool_size;
+static u8 *output_data;
+static unsigned *output_length;
+static const char *output_name;
 
 /* Newlib I/O for the guest compiler. The linker output is a guest RAM file. */
 int _open(const char *name, int flags, int mode) {
     (void)flags; (void)mode;
-    if (strcmp(name, "kernel.elf") || output_open) { errno = ENOENT; return -1; }
+    if (!output_name || strcmp(name, output_name) || output_open) { errno = ENOENT; return -1; }
     output_open = 1;
-    cursor = machine.image_len = 0;
+    cursor = *output_length = 0;
     return 3;
 }
 int _close(int fd) { if (fd != 3) return -1; output_open = 0; return 0; }
@@ -37,16 +43,16 @@ int _write(int fd, const char *p, int n) {
     if (fd != 3 || !output_open || n < 0 || (unsigned)n > IMAGE_CAP - cursor) {
         errno = ENOSPC; return -1;
     }
-    memcpy(machine.image + cursor, p, n);
+    memcpy(output_data + cursor, p, n);
     cursor += n;
-    if (cursor > machine.image_len) machine.image_len = cursor;
+    if (cursor > *output_length) *output_length = cursor;
     return n;
 }
 int _lseek(int fd, int offset, int origin) {
     long pos = offset;
     if (fd != 3) return -1;
     if (origin == SEEK_CUR) pos += cursor;
-    if (origin == SEEK_END) pos += machine.image_len;
+    if (origin == SEEK_END) pos += *output_length;
     if (pos < 0 || pos > IMAGE_CAP) return -1;
     return cursor = pos;
 }
@@ -65,21 +71,25 @@ void *_sbrk(ptrdiff_t n) {
 static void diagnostic(void *ignored, const char *s) {
     (void)ignored; snprintf(machine.diagnostic,sizeof machine.diagnostic,"%s",s); _write(2, s, strlen(s)); _write(2, "\n", 1);
 }
-static int compile(struct machine *m, unsigned generation) {
+static int compile_source(const char *source, unsigned generation, int user) {
     char value[24];
-    m->diagnostic[0] = 0;
+    machine.diagnostic[0] = 0;
     TCCState *t = tcc_new();
     if (!t) return 0;
     snprintf(value, sizeof(value), "%u", generation);
     tcc_set_error_func(t, NULL, diagnostic);
-    tcc_set_options(t, "-nostdlib -nostdinc -static -Wl,-Ttext=0x44010000");
+    tcc_set_options(t, user ? "-nostdlib -nostdinc -static -Wl,-Ttext=0x46010000" :
+                             "-nostdlib -nostdinc -static -Wl,-Ttext=0x44010000");
     tcc_define_symbol(t, "BUILD_NUMBER", value);
-    m->image_len = 0;
+    output_data = user ? tool_image : machine.image;
+    output_length = user ? &tool_size : &machine.image_len;
+    output_name = user ? "tools.elf" : "kernel.elf";
+    *output_length = 0;
     int ok = tcc_set_output_type(t, TCC_OUTPUT_EXE) == 0
-          && tcc_compile_string(t, m->source) == 0
-          && tcc_output_file(t, "kernel.elf") == 0;
+          && tcc_compile_string(t, source) == 0
+          && tcc_output_file(t, output_name) == 0;
     tcc_delete(t);
-    return ok && m->valid(m->image, m->image_len);
+    return ok;
 }
 
 struct elf_header {
@@ -88,7 +98,7 @@ struct elf_header {
     u16 size, phsize, count, shsize, shcount, names;
 };
 struct program_header { u32 type, flags; u64 offset, va, pa, file, mem, align; };
-static int valid(const u8 *bytes, u32 size) {
+static int valid_range(const u8 *bytes, u32 size, u64 low, u64 high) {
     struct elf_header h;
     if (size < sizeof(h)) return 0;
     memcpy(&h, bytes, sizeof h);
@@ -100,11 +110,17 @@ static int valid(const u8 *bytes, u32 size) {
         struct program_header p;
         memcpy(&p, bytes + h.phoff + i * sizeof p, sizeof p);
         if (p.type != 1) continue;
-        if (p.va < 0x44000000 || p.va > 0x44400000 || p.mem > 0x44400000 - p.va ||
+        if (p.va < low || p.va > high || p.mem > high - p.va ||
             p.file > p.mem || p.offset > size || p.file > size - p.offset) return 0;
         if ((p.flags & 1) && h.entry >= p.va && h.entry - p.va < p.file) executable = 1;
     }
     return executable;
+}
+static int valid(const u8 *bytes, u32 size) {
+    return valid_range(bytes,size,0x44000000,0x44400000);
+}
+static int compile(struct machine *m, unsigned generation) {
+    return compile_source(m->source,generation,0) && valid(m->image,m->image_len);
 }
 static void barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
 volatile unsigned trial_armed;
@@ -112,7 +128,7 @@ static void end_trial(void) {
     __asm__ volatile("msr daifset,#2\nmsr cntp_ctl_el0,xzr\nisb" ::: "memory");
     trial_armed=0;
 }
-static void arm_trial(void) {
+static void arm_timer(unsigned seconds) {
     /* GICv2, non-secure EL1 physical timer PPI 30 on QEMU virt. */
     volatile u32 *dist=(volatile u32 *)0x08000000, *cpu=(volatile u32 *)0x08010000;
     dist[0]=1; dist[0x100/4]=1u<<30;
@@ -121,9 +137,8 @@ static void arm_trial(void) {
     u64 freq, now;
     __asm__ volatile("mrs %0,cntfrq_el0":"=r"(freq));
     __asm__ volatile("mrs %0,cntpct_el0":"=r"(now));
-    u64 limit=now+8*freq, enable=1;
-    trial_armed=1;
-    __asm__ volatile("msr cntp_cval_el0,%0\nmsr cntp_ctl_el0,%1\nisb\nmsr daifclr,#2" ::
+    u64 limit=now+seconds*freq, enable=1;
+    __asm__ volatile("msr cntp_cval_el0,%0\nmsr cntp_ctl_el0,%1\nisb" ::
                      "r"(limit),"r"(enable):"memory");
 }
 static void enter(struct machine *m) {
@@ -138,11 +153,15 @@ static void enter(struct machine *m) {
         memset((void *)(p.va + p.file), 0, p.mem - p.file);
     }
     barrier();
-    if (m->abi==ABI_VERSION && m->trial==1) arm_trial(); else end_trial();
+    if (m->abi>=2 && m->trial==1) {
+        trial_armed=1; arm_timer(8); __asm__ volatile("msr daifclr,#2");
+    } else end_trial();
     transfer(m, h.entry);
 }
+#include "user_loader.c"
 void boot_main(void) {
     machine.abi = ABI_VERSION;
+    machine.tool_seed=tool_source; machine.tool_compile=tool_compile; machine.tool_run=tool_run;
     machine.slot = -1;
     machine.compile = compile; machine.valid = valid;
     machine.enter = enter; machine.barrier = barrier;
